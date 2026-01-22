@@ -1,0 +1,50 @@
+﻿version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    platform: linux/arm64/v8  # Para Raspberry Pi ARM64
+    environment:
+      POSTGRES_DB: drones
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - drone_network
+
+  backend:
+    build: ./backend
+    platform: linux/arm64/v8
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    environment:
+      - DB_URL=postgresql://user:password@postgres:5432/drones
+      - MAVLINK_DEVICE=/dev/ttyACM0
+      - MAVLINK_BAUD=57600
+    volumes:
+      - /dev:/dev  # Para acceder a dispositivos USB como ttyACM0
+    privileged: true  # Necesario para acceso a hardware
+    networks:
+      - drone_network
+
+  frontend:
+    build: ./frontend
+    platform: linux/arm64/v8
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - drone_network
+
+volumes:
+  postgres_data:
+
+networks:
+  drone_network:
+    driver: bridge
