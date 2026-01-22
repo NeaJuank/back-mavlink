@@ -4,3 +4,4 @@ pymavlink
 sqlalchemy
 psycopg2-binary
 pyserial
+python-dotenv
