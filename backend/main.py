@@ -1,41 +1,48 @@
-import asyncio
+# backend/main.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import logging
-from fastapi import FastAPI, WebSocket
-from config import MAVLINK_DEVICE, MAVLINK_BAUD
-from mavlink.connection import MAVLinkConnection
-from mavlink.telemetry import TelemetryBuffer
-from db.repository import save_telemetry
-from api.rest import router
-from api.websocket import telemetry_ws
 
-logging.basicConfig(level=logging.INFO)
+from api import rest
+from config import API_HOST, API_PORT, LOG_LEVEL
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-app.include_router(router)
+app = FastAPI(
+    title="Drone Control API",
+    description="API REST para control de dron vía MAVLink",
+    version="1.0.0"
+)
 
-mav = MAVLinkConnection(MAVLINK_DEVICE, MAVLINK_BAUD)
-telemetry = TelemetryBuffer()
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.websocket("/ws/telemetry")
-async def ws(ws: WebSocket):
-    await telemetry_ws(ws, telemetry)
+# Incluir rutas
+app.include_router(rest.router, prefix="/api", tags=["drone"])
 
-async def mavlink_loop():
-    while True:
-        try:
-            msg = mav.recv()
-            if msg:
-                telemetry.update(msg)
-                if telemetry.should_persist():
-                    save_telemetry(telemetry.data)
-                    telemetry.last_save = telemetry.data["timestamp"]
-        except Exception as e:
-            logger.error(f"Error in MAVLink loop: {e}")
-        await asyncio.sleep(0.01)
+@app.get("/")
+def root():
+    return {
+        "message": "Drone Control API",
+        "version": "1.0.0",
+        "status": "running"
+    }
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(mavlink_loop())
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
 
-###asi se inicia chavales "uvicorn main:app --reload"
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=API_HOST, port=API_PORT)

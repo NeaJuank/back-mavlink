@@ -1,10 +1,16 @@
+# backend/config.py
 import os
 from dotenv import load_dotenv
 
-# Cargar variables del archivo .env
 load_dotenv()
 
-MAVLINK_DEVICE = os.getenv("MAVLINK_DEVICE", "/dev/ttyACM0")  # Puerto USB de la Pixhawk en Raspberry Pi
-MAVLINK_BAUD = int(os.getenv("MAVLINK_BAUD", "57600"))
+# MAVLink
+MAVLINK_DEVICE = os.getenv('MAVLINK_DEVICE', '/dev/ttyUSB0')
+MAVLINK_BAUD = int(os.getenv('MAVLINK_BAUD', 57600))
 
-DB_URL = os.getenv("DB_URL", "postgresql://user:password@postgres:5432/drones")
+# API
+API_HOST = os.getenv('API_HOST', '0.0.0.0')
+API_PORT = int(os.getenv('API_PORT', 8000))
+
+# Logging
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
