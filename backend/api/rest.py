@@ -1,6 +1,6 @@
 # backend/api/rest.py
 from fastapi import APIRouter, HTTPException
-from mavlink_connection import MAVLinkConnection, MAVLINK_DEVICE, MAVLINK_BAUD
+from mavlink.connection import MAVLinkConnection, MAVLINK_DEVICE, MAVLINK_BAUD
 from pydantic import BaseModel
 import logging
 

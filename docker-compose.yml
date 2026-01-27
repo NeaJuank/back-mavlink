@@ -5,9 +5,9 @@ services:
     image: postgres:15
     platform: linux/arm64/v8  # Para Raspberry Pi ARM64
     environment:
-      POSTGRES_DB: drones
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
+      POSTGRES_DB: dronix
+      POSTGRES_USER: dronix_user
+      POSTGRES_PASSWORD: DronixSecure2024!
     ports:
       - "5432:5432"
     volumes:

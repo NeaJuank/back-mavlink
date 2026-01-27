@@ -5,3 +5,5 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 pyserial==3.5</content>
 <parameter name="filePath">c:\Users\Usuario\Documents\back mavlink\requirements.txt
+python-dotenv==1.0.0
+pydantic==2.5.0

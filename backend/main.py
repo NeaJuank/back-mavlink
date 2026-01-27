@@ -5,6 +5,7 @@ import logging
 
 from api import rest
 from config import API_HOST, API_PORT, LOG_LEVEL
+from sqlalchemy import text 
 
 logging.basicConfig(
     level=LOG_LEVEL,
