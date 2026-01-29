@@ -1,13 +1,33 @@
 # backend/api/rest.py
-from fastapi import APIRouter, HTTPException
-from mavlink.connection import MAVLinkConnection, MAVLINK_DEVICE, MAVLINK_BAUD
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from backend.config import MAVLINK_DEVICE, MAVLINK_BAUD
+from backend.mavlink.controller import MAVController
 from pydantic import BaseModel
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-mav = MAVLinkConnection(MAVLINK_DEVICE, MAVLINK_BAUD)
+# Controlador alto nivel que usa connection/commands/telemetry
+mav = MAVController(MAVLINK_DEVICE, MAVLINK_BAUD)
+
+
+@router.websocket('/ws/telemetry')
+async def telemetry_ws(websocket: WebSocket):
+    """WebSocket que emite telemetría cada segundo."""
+    await websocket.accept()
+    try:
+        while True:
+            try:
+                data = mav.get_telemetry()
+            except Exception as e:
+                data = {"error": str(e)}
+
+            await websocket.send_json(data)
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
 
 # ============================================
 # MODELOS DE DATOS (Request Bodies)

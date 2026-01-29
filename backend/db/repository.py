@@ -1,5 +1,5 @@
-from db.database import SessionLocal
-from db.models import Telemetry
+from backend.db.database import SessionLocal
+from backend.db.models import Telemetry
 import logging
 
 logger = logging.getLogger(__name__)

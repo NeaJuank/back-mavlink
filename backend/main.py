@@ -3,8 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from api import rest
-from config import API_HOST, API_PORT, LOG_LEVEL
+from backend.api import rest
+from backend.config import API_HOST, API_PORT, LOG_LEVEL
 from sqlalchemy import text 
 
 logging.basicConfig(
