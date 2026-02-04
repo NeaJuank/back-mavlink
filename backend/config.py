@@ -93,4 +93,11 @@ API_PORT = int(os.getenv('API_PORT', 8000))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 # Database URL
-DB_URL = os.getenv('DB_URL', 'sqlite:///./local.db')
+DEFAULT_DB = 'postgresql://dronix_user:DronixSecure2024!@postgres:5432/drones'
+DB_URL = os.getenv('DB_URL', DEFAULT_DB)
+
+# Safety: prefer PostgreSQL only (no SQLite)
+if not DB_URL.startswith('postgres'):
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning("DB_URL does not look like a PostgreSQL URL. Ensure DB_URL points to a Postgres database.")

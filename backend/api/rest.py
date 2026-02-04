@@ -92,6 +92,36 @@ def get_current_device():
         return _current_device
 
 
+@router.get("/device")
+def get_device():
+    """Información sobre el dispositivo MAV actual."""
+    device = get_current_device()
+    simulated = bool(device and isinstance(device, str) and device.upper() == 'SIM')
+
+    # Determinar si estamos conectados (siempre True para SIM)
+    connected = False
+    if mav is None:
+        connected = False
+    else:
+        if simulated:
+            connected = True
+        else:
+            try:
+                conn = getattr(mav, 'conn', None)
+                connected = bool(conn and getattr(conn, 'is_connected', lambda: False)())
+            except Exception:
+                connected = False
+
+    return {
+        "success": True,
+        "data": {
+            "device": device,
+            "connected": connected,
+            "simulated": simulated
+        }
+    }
+
+
 def get_mav():
     """Obtener el controlador inicializado o lanzar HTTP 503 si no está disponible."""
     if mav is None:

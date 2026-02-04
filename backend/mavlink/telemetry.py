@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
 class DroneTelemetry:
     """Clase para leer y almacenar telemetría del dron"""
     
-    def __init__(self, connection):
+    def __init__(self, connection, persist_interval: float = 5.0):
         """
         Args:
             connection: Instancia de MAVLinkConnection
+            persist_interval: segundos entre guardados automáticos en BD (0 o None para desactivar)
         """
         self.conn = connection
         self.master = connection.master
@@ -59,9 +60,42 @@ class DroneTelemetry:
         
         self._running = False
         self._thread = None
+        self._persist_interval = float(persist_interval) if persist_interval else 0
+        self._persist_thread = None
         
         # Iniciar thread de lectura
         self.start()
+
+        # Iniciar thread de persistencia si corresponde
+        if self._persist_interval and self._persist_interval > 0:
+            self._persist_thread = __import__('threading').Thread(target=self._persist_loop, daemon=True)
+            self._persist_thread.start()
++
++    def _persist_loop(self):
++        """Guardar snapshot de telemetría en la BD periódicamente."""
++        import time
++        try:
++            from backend.db.repository import save_telemetry
++        except Exception as e:
++            logger.warning(f"save_telemetry no está disponible: {e}")
++            return
++
++        while self._running:
++            try:
++                snapshot = {
++                    'altitude': self.data.get('altitude'),
++                    'speed': self.data.get('speed'),
++                    'pitch': self.data.get('attitude', {}).get('pitch'),
++                    'roll': self.data.get('attitude', {}).get('roll'),
++                    'yaw': self.data.get('attitude', {}).get('yaw'),
++                    # Guardamos voltaje como valor representativo de la batería
++                    'battery': self.data.get('battery', {}).get('voltage')
++                }
++                save_telemetry(snapshot)
++            except Exception as e:
++                logger.error(f"Error guardando telemetría: {e}")
++            time.sleep(self._persist_interval)
+
     
     def start(self):
         """Iniciar thread de lectura de telemetría"""
@@ -78,6 +112,8 @@ class DroneTelemetry:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
+        if self._persist_thread:
+            self._persist_thread.join(timeout=2)
         logger.info("📡 Thread de telemetría detenido")
     
     def _read_loop(self):
