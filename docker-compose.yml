@@ -16,14 +16,16 @@ services:
       - drone_network
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     platform: linux/arm64/v8
     ports:
       - "8000:8000"
     depends_on:
       - postgres
     environment:
-      - DB_URL=postgresql://user:password@postgres:5432/drones
+      - DB_URL=postgresql://dronix_user:DronixSecure2024!@postgres:5432/drones
       - MAVLINK_DEVICE=/dev/ttyACM0
       - MAVLINK_BAUD=57600
     volumes:
@@ -36,7 +38,7 @@ services:
     build: ./frontend
     platform: linux/arm64/v8
     ports:
-      - "3000:3000"
+      - "4545:4545"
     depends_on:
       - backend
     networks:
