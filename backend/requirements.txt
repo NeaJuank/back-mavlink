@@ -6,3 +6,4 @@ psycopg2-binary==2.9.9
 pyserial==3.5
 python-dotenv==1.0.0
 pydantic==2.5.0
+pytest==8.0.0
