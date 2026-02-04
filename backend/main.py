@@ -68,6 +68,31 @@ def root():
 def health():
     return {"status": "healthy"}
 
+# Rutas adicionales para el frontend que espera endpoints sin el prefijo /api
+@app.get("/drones")
+def list_drones():
+    return [
+        {"id": 1, "name": "Test Drone", "status": "idle", "model": "PX4"}
+    ]
+
+@app.get("/missions")
+def list_missions():
+    return [
+        {"id": 1, "name": "Mission Alpha", "status": "paused", "progress_percent": 0}
+    ]
+
+@app.get("/users")
+def list_users():
+    return [
+        {"id": 1, "username": "operator", "role": "pilot"}
+    ]
+
+@app.get("/flight-routes")
+def list_routes():
+    return [
+        {"id": 1, "name": "Route 1", "total_distance": 1.2}
+    ]
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=API_HOST, port=API_PORT)
