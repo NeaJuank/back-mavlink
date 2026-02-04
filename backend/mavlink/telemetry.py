@@ -70,31 +70,31 @@ class DroneTelemetry:
         if self._persist_interval and self._persist_interval > 0:
             self._persist_thread = __import__('threading').Thread(target=self._persist_loop, daemon=True)
             self._persist_thread.start()
-+
-+    def _persist_loop(self):
-+        """Guardar snapshot de telemetría en la BD periódicamente."""
-+        import time
-+        try:
-+            from backend.db.repository import save_telemetry
-+        except Exception as e:
-+            logger.warning(f"save_telemetry no está disponible: {e}")
-+            return
-+
-+        while self._running:
-+            try:
-+                snapshot = {
-+                    'altitude': self.data.get('altitude'),
-+                    'speed': self.data.get('speed'),
-+                    'pitch': self.data.get('attitude', {}).get('pitch'),
-+                    'roll': self.data.get('attitude', {}).get('roll'),
-+                    'yaw': self.data.get('attitude', {}).get('yaw'),
-+                    # Guardamos voltaje como valor representativo de la batería
-+                    'battery': self.data.get('battery', {}).get('voltage')
-+                }
-+                save_telemetry(snapshot)
-+            except Exception as e:
-+                logger.error(f"Error guardando telemetría: {e}")
-+            time.sleep(self._persist_interval)
+
+    def _persist_loop(self):
+        """Guardar snapshot de telemetría en la BD periódicamente."""
+        import time
+        try:
+            from backend.db.repository import save_telemetry
+        except Exception as e:
+            logger.warning(f"save_telemetry no está disponible: {e}")
+            return
+
+        while self._running:
+            try:
+                snapshot = {
+                    'altitude': self.data.get('altitude'),
+                    'speed': self.data.get('speed'),
+                    'pitch': self.data.get('attitude', {}).get('pitch'),
+                    'roll': self.data.get('attitude', {}).get('roll'),
+                    'yaw': self.data.get('attitude', {}).get('yaw'),
+                    # Guardamos voltaje como valor representativo de la batería
+                    'battery': self.data.get('battery', {}).get('voltage')
+                }
+                save_telemetry(snapshot)
+            except Exception as e:
+                logger.error(f"Error guardando telemetría: {e}")
+            time.sleep(self._persist_interval)
 
     
     def start(self):

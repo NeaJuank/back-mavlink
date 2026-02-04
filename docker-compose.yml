@@ -38,7 +38,9 @@ services:
     build: ./frontend
     platform: linux/arm64/v8
     ports:
-      - "4545:4545"
+      - "4545:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND=http://backend:8000
     depends_on:
       - backend
     networks:
