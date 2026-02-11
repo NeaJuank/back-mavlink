@@ -27,34 +27,59 @@ class MAVLinkConnection:
         self.master = None
         self.connected = False
         self._lock = threading.Lock()
+        self._auto_reconnect_thread = None
+        self._auto_reconnect_stop = None
         
         # Conectar automáticamente
         self.connect()
     
-    def connect(self):
-        """Establecer conexión con Pixhawk"""
-        try:
-            logger.info(f"🔌 Conectando a {self.device} @ {self.baud} baud...")
-            
-            with self._lock:
-                self.master = mavutil.mavlink_connection(
-                    self.device,
-                    baud=self.baud,
-                    source_system=255  # GCS (Ground Control Station)
-                )
-            
-            logger.info("⏳ Esperando heartbeat...")
-            self.master.wait_heartbeat(timeout=10)
-            
-            self.connected = True
-            logger.info(f"✅ Conectado (System: {self.master.target_system}, Component: {self.master.target_component})")
-            
-            return True
-            
-        except Exception as e:
-            self.connected = False
-            logger.error(f"❌ Error de conexión: {e}")
-            raise ConnectionError(f"No se pudo conectar a {self.device}: {e}")
+    def connect(self, max_retries: int = 5, backoff_factor: float = 1.0):
+        """Establecer conexión con Pixhawk con reintentos exponenciales.
+
+        Args:
+            max_retries: número máximo de intentos (incluye el primer intento).
+            backoff_factor: factor base (segundos) para backoff exponencial.
+
+        Lanza ConnectionError si no puede conectar después de los reintentos.
+        """
+        attempt = 0
+        last_exc = None
+
+        while attempt < max_retries:
+            try:
+                logger.info(f"🔌 Conectando a {self.device} @ {self.baud} baud... (intento {attempt+1}/{max_retries})")
+                
+                with self._lock:
+                    self.master = mavutil.mavlink_connection(
+                        self.device,
+                        baud=self.baud,
+                        source_system=255  # GCS (Ground Control Station)
+                    )
+                
+                logger.info("⏳ Esperando heartbeat...")
+                self.master.wait_heartbeat(timeout=10)
+                
+                self.connected = True
+                logger.info(f"✅ Conectado (System: {self.master.target_system}, Component: {self.master.target_component})")
+                
+                return True
+                
+            except Exception as e:
+                last_exc = e
+                self.connected = False
+                logger.warning(f"❌ Error de conexión en intento {attempt+1}: {e}")
+                
+                attempt += 1
+                if attempt >= max_retries:
+                    break
+                
+                # Exponential backoff antes del siguiente intento
+                sleep_time = backoff_factor * (2 ** (attempt - 1))
+                logger.info(f"⏱ Reintentando en {sleep_time} segundos...")
+                time.sleep(sleep_time)
+        
+        logger.error(f"No se pudo conectar a {self.device} después de {max_retries} intentos: {last_exc}")
+        raise ConnectionError(f"No se pudo conectar a {self.device}: {last_exc}")
     
     def disconnect(self):
         """Cerrar conexión"""
@@ -66,6 +91,49 @@ class MAVLinkConnection:
                 self.master = None
         
         logger.info("🔌 Desconectado")
+    
+    def reconnect(self, max_retries: int = 5, backoff_factor: float = 1.0):
+        """Forzar re-conexión: desconecta (si procede) y vuelve a intentar conectar."""
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+        return self.connect(max_retries=max_retries, backoff_factor=backoff_factor)
+    
+    def start_auto_reconnect(self, interval: float = 5.0):
+        """Inicia un hilo que intentará reconectar periódicamente si la conexión se pierde.
+
+        El hilo es silencioso y no bloqueante; para detenerlo llamar a `stop_auto_reconnect()`.
+        """
+        if self._auto_reconnect_thread and self._auto_reconnect_thread.is_alive():
+            return
+
+        self._auto_reconnect_stop = threading.Event()
+
+        def _loop():
+            logger.info("🔁 Auto-reconnect thread iniciado")
+            while not self._auto_reconnect_stop.is_set():
+                if not self.is_connected():
+                    try:
+                        # Intento rápido de reconexión (un intento por ciclo)
+                        self.connect(max_retries=1)
+                    except Exception:
+                        logger.debug("Auto-reconnect: intento fallido")
+                # Esperar antes del siguiente chequeo
+                self._auto_reconnect_stop.wait(interval)
+            logger.info("🔁 Auto-reconnect thread detenido")
+
+        self._auto_reconnect_thread = threading.Thread(target=_loop, daemon=True)
+        self._auto_reconnect_thread.start()
+
+    def stop_auto_reconnect(self):
+        """Detiene el hilo de reconexión automática (si existe)."""
+        if self._auto_reconnect_stop:
+            self._auto_reconnect_stop.set()
+        if self._auto_reconnect_thread:
+            self._auto_reconnect_thread.join(timeout=2)
+            self._auto_reconnect_thread = None
+            self._auto_reconnect_stop = None
     
     def is_connected(self):
         """Verificar si está conectado"""
