@@ -1,1 +1,14 @@
-base.apk
+# Node
+node_modules/
+
+# React Native
+mobile/node_modules/
+mobile/android/app/build/
+mobile/android/.cxx/
+mobile/ios/build/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
