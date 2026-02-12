@@ -27,7 +27,9 @@ class MAVLinkConnection:
         self.master = None
         self.connected = False
         self._lock = threading.Lock()
-        
+        self._auto_reconnect_thread = None
+        self._auto_reconnect_stop = None
+
         # Intentar conectar
         self.connect()
     
@@ -74,10 +76,25 @@ class MAVLinkConnection:
     
     def disconnect(self):
         """Cerrar conexión"""
+        # Detener auto-reconnect si está activo
+        if self._auto_reconnect_stop:
+            try:
+                self._auto_reconnect_stop.set()
+            except Exception:
+                pass
+        if self._auto_reconnect_thread:
+            try:
+                self._auto_reconnect_thread.join(timeout=2)
+            except Exception:
+                pass
+
         self.connected = False
         if self.master:
             with self._lock:
-                self.master.close()
+                try:
+                    self.master.close()
+                except Exception:
+                    pass
                 self.master = None
         logger.info("🔌 Desconectado")
     
@@ -106,6 +123,54 @@ class MAVLinkConnection:
                 blocking=blocking,
                 timeout=timeout
             )
+
+    def start_auto_reconnect(self, interval: float = 5.0, backoff_factor: float = 1.0):
+        """Inicia un hilo que intentará reconectar periódicamente si la conexión se pierde.
+
+        El hilo intentará `connect()` y aplicará backoff exponencial en fallos.
+        """
+        if self._auto_reconnect_thread and getattr(self._auto_reconnect_thread, 'is_alive', lambda: False)():
+            return
+
+        self._auto_reconnect_stop = threading.Event()
+
+        def _loop():
+            logger.info("🔁 Auto-reconnect thread iniciado")
+            backoff = interval
+            while not self._auto_reconnect_stop.is_set():
+                if self.is_connected():
+                    backoff = interval
+                    time.sleep(interval)
+                    continue
+
+                try:
+                    # Intento único; connect tiene su propio retry interno
+                    self.connect()
+                    backoff = interval
+                except Exception as e:
+                    logger.debug(f"Auto-reconnect intento fallido: {e}")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
+
+            logger.info("🔁 Auto-reconnect thread detenido")
+
+        self._auto_reconnect_thread = threading.Thread(target=_loop, daemon=True)
+        self._auto_reconnect_thread.start()
+
+    def stop_auto_reconnect(self):
+        """Detiene el hilo de reconexión automática (si existe)."""
+        if self._auto_reconnect_stop:
+            try:
+                self._auto_reconnect_stop.set()
+            except Exception:
+                pass
+        if self._auto_reconnect_thread:
+            try:
+                self._auto_reconnect_thread.join(timeout=2)
+            except Exception:
+                pass
+            self._auto_reconnect_thread = None
+            self._auto_reconnect_stop = None
     
     def wait_ack(self, command_id=None, timeout=3):
         """
@@ -152,9 +217,15 @@ class MAVLinkConnection:
     
     def _telemetry_loop(self, interval=0.01):
         """Loop interno de lectura de telemetría"""
-        while self._telemetry_running and self.is_connected():
+        # Mantener el thread vivo incluso si la conexión se pierde; cuando no hay
+        # conexión, el loop duerme y espera reconexión.
+        while getattr(self, '_telemetry_running', False):
             try:
-                msg = self.master.recv_match(blocking=False)
+                if not self.is_connected():
+                    time.sleep(0.5)
+                    continue
+
+                msg = self.recv_match(blocking=False)
                 if msg:
                     msg_type = msg.get_type()
                     if msg_type == "HEARTBEAT":
@@ -165,7 +236,7 @@ class MAVLinkConnection:
                         self._log_gps(msg)
                     elif msg_type == "BATTERY_STATUS":
                         self._log_battery(msg)
-                
+
                 time.sleep(interval)
             except Exception as e:
                 logger.error(f"Error en telemetry_loop: {e}")
@@ -214,30 +285,48 @@ class MAVLinkConnection:
     def send_arm(self):
         """Armar motores"""
         logger.info("🔴 ARM - Armando motores...")
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0, 1, 0, 0, 0, 0, 0, 0
-        )
+        with self._lock:
+            master = self.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0, 1, 0, 0, 0, 0, 0, 0
+            )
+
         return self.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM)
     
     def send_disarm(self):
         """Desarmar motores"""
         logger.info("🟢 DISARM - Desarmando motores...")
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0, 0, 0, 0, 0, 0, 0, 0
-        )
+        with self._lock:
+            master = self.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0, 0, 0, 0, 0, 0, 0, 0
+            )
+
         return self.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM)
     
     def send_mode(self, mode_name):
         """Cambiar modo de vuelo"""
         logger.info(f"🔄 Cambiando a modo: {mode_name}")
-        if mode_name not in self.master.mode_mapping():
-            raise ValueError(f"Modo inválido: {mode_name}")
-        mode_id = self.master.mode_mapping()[mode_name]
-        self.master.set_mode(mode_id)
+        with self._lock:
+            master = self.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            if mode_name not in master.mode_mapping():
+                raise ValueError(f"Modo inválido: {mode_name}")
+            mode_id = master.mode_mapping()[mode_name]
+            master.set_mode(mode_id)
+
         return True

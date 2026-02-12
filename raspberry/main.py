@@ -7,6 +7,7 @@ Ajusta el puerto y baudrate según tu setup
 import logging
 import sys
 import time
+import os
 from connection import MAVLinkConnection
 
 # Configurar logging
@@ -21,10 +22,10 @@ def main():
     """Función main para prueba básica de conexión"""
     
     # ========================================
-    # AJUSTA ESTOS VALORES SEGÚN TU HARDWARE
+    # PUERTO y BAUDRATE (pueden configurarse vía variables de entorno)
     # ========================================
-    PORT = "/dev/ttyUSB0"  # Cambia si es diferente
-    BAUD = 57600           # Cambiar según tu configuración
+    PORT = os.getenv('MAVLINK_DEVICE', '/dev/ttyUSB0')
+    BAUD = int(os.getenv('MAVLINK_BAUD', os.getenv('BAUD', '57600')))
     
     logger.info("=" * 60)
     logger.info("🚁 Raspberry Pi Companion - MAVLink Test")
@@ -35,6 +36,19 @@ def main():
     
     try:
         # Conectar
+        # Intentar detectar problemas de permiso/archivo antes de inicializar
+        try:
+            # Intento rápido de abrir con pyserial si está disponible
+            import serial
+            try:
+                s = serial.Serial(PORT, BAUD, timeout=0.5)
+                s.close()
+            except Exception as e:
+                logger.warning(f"No se pudo abrir {PORT}: {e} - verifica permisos (sudo usermod -aG dialout $(whoami))")
+        except Exception:
+            # pyserial no instalado o no disponible; dejamos que la conexión trate el error
+            pass
+
         drone = MAVLinkConnection(PORT, BAUD)
         
         if not drone.is_connected():
