@@ -4,6 +4,7 @@ backend/mavlink/controller.py
 Controlador de alto nivel que combina conexión, comandos y telemetría
 Exponer los métodos que espera la API REST.
 """
+from .rc_override import RCOverrideController
 from .connection import MAVLinkConnection
 from .commands import DroneCommands
 from .telemetry import DroneTelemetry
@@ -56,6 +57,9 @@ class MAVController:
         self.cmd = DroneCommands(self.conn)
         self.telemetry = DroneTelemetry(self.conn)
         self.master = self.conn.master
+        self.rc = RCOverrideController(self.conn)
+        self.rc.start()
+        print("✅ RC Override Controller iniciado")
 
     # Telemetry / status wrappers
     def get_telemetry(self):

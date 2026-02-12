@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from backend.api import rest
+from backend.api import rest, websocket, camera_stream
 from backend.config import API_HOST, API_PORT, LOG_LEVEL, MAVLINK_BAUD, detect_mavlink_device
 from sqlalchemy import text 
 
@@ -31,28 +31,56 @@ app.add_middleware(
 
 # Incluir rutas
 app.include_router(rest.router, prefix="/api", tags=["drone"])
+app.include_router(websocket.router)  # WebSocket no lleva prefix
+app.include_router(camera_stream.router)  # Ya tiene su propio prefix
 
-# Inicialización en eventos de ciclo de vida para evitar side-effects en import
+# Inicialización en eventos de ciclo de vida
 @app.on_event("startup")
 def startup_event():
     try:
+        # Inicializar MAVLink
         device = detect_mavlink_device()
         logger.info(f"Selected MAVLink device: {device}")
         rest.init_mav(device, MAVLINK_BAUD)
-        # Start a background monitor that will switch to SIM or to the real
-        # device automatically when the Pi is attached/detached.
+        
+        # Start monitoring
         rest.start_monitoring(MAVLINK_BAUD, interval=5)
+        
+        # Iniciar cámara RealSense
+        try:
+            camera_stream.camera.start(width=640, height=480, fps=30)
+            logger.info("✅ Cámara RealSense iniciada")
+        except Exception as e:
+            logger.warning(f"⚠️ Error iniciando cámara (continuando sin ella): {e}")
+        
+        # Iniciar WebSocket de telemetría
+        if getattr(rest, 'mav', None):
+            websocket.start_telemetry_broadcast(rest.mav)
+            logger.info("✅ Telemetry WebSocket iniciado")
+        else:
+            logger.warning("⚠️ MAV controller no disponible, WebSocket no iniciado")
+            
     except Exception as e:
-        logger.error(f"Failed to initialize MAV controller on startup: {e}")
+        logger.error(f"Failed to initialize on startup: {e}")
 
 @app.on_event("shutdown")
 def shutdown_event():
     try:
+        # Detener cámara
+        try:
+            camera_stream.camera.stop()
+            logger.info("✅ Cámara detenida")
+        except Exception as e:
+            logger.error(f"Error deteniendo cámara: {e}")
+        
+        # Desconectar MAVLink
         if getattr(rest, 'mav', None):
             try:
                 rest.mav.conn.disconnect()
+                logger.info("✅ MAVLink desconectado")
             except Exception as e:
                 logger.error(f"Error disconnecting MAV: {e}")
+                
     except Exception as e:
         logger.error(f"Error during shutdown cleanup: {e}")
 
@@ -68,7 +96,7 @@ def root():
 def health():
     return {"status": "healthy"}
 
-# Rutas adicionales para el frontend que espera endpoints sin el prefijo /api
+# Rutas adicionales para el frontend
 @app.get("/drones")
 def list_drones():
     return [

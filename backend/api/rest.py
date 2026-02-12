@@ -1,546 +1,358 @@
-# backend/api/rest.py
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from backend.config import MAVLINK_DEVICE, MAVLINK_BAUD
-from backend.mavlink.controller import MAVController
+"""
+Endpoints REST para control del dron
+API completa para control desde Mobile/Frontend
+"""
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 import logging
-import asyncio
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
-# Controlador alto nivel que usa connection/commands/telemetry
-# Se inicializa en el evento de arranque para evitar abrir puertos en tiempo de import
-mav = None
-_monitor_thread = None
-_mlock = __import__('threading').Lock()
-_current_device = None
+router = APIRouter(prefix="/api", tags=["drone"])
 
+# ============ Schemas ============
 
-def init_mav(device, baud):
-    """Inicializar el controlador MAV. Llamar desde `app.on_event('startup')`.
-
-    Si falla con un dispositivo físico, intentará hacer fallback a 'SIM' para
-    mantener la API disponible en modo simulación.
-    """
-    global mav, _current_device
-    logger.info(f"Inicializando MAVController en device={device} baud={baud}")
-    try:
-        m = MAVController(device, baud)
-        with _mlock:
-            mav = m
-            _current_device = device
-        logger.info("MAVController inicializado")
-        return True
-    except Exception as e:
-        logger.error(f"No se pudo inicializar MAVController en {device}: {e}")
-        # Si el intento fue con un device físico, intentar fallback a simulador
-        if device and device.upper() != 'SIM':
-            logger.info("Intentando fallback a 'SIM'...")
-            try:
-                m = MAVController('SIM', baud)
-                with _mlock:
-                    mav = m
-                    _current_device = 'SIM'
-                logger.info("MAVController (SIM) inicializado")
-                return True
-            except Exception as e2:
-                logger.error(f"No se pudo inicializar el simulador: {e2}")
-        with _mlock:
-            mav = None
-            _current_device = None
-        return False
-
-
-def _monitor_loop(baud, interval=5):
-    """Loop de background que detecta cambios en el dispositivo e intenta reconectar."""
-    import time
-    from backend.config import detect_mavlink_device
-
-    logger.info("MAV monitor thread started")
-    while True:
-        try:
-            dev = detect_mavlink_device()
-            with _mlock:
-                cur = _current_device
-            if dev != cur:
-                logger.info(f"Device change detected: {cur} -> {dev}")
-                success = init_mav(dev, baud)
-                if success:
-                    logger.info(f"Switched MAV controller to {dev}")
-            # If current device is None, ensure we have at least SIM
-            with _mlock:
-                if _current_device is None:
-                    init_mav('SIM', baud)
-        except Exception as e:
-            logger.error(f"Error in MAV monitor loop: {e}")
-        time.sleep(interval)
-
-
-def start_monitoring(baud, interval=5):
-    """Inicia el hilo monitor si no está ya corriendo."""
-    global _monitor_thread
-    import threading
-    if _monitor_thread and getattr(_monitor_thread, 'is_alive', lambda: False)():
-        return
-    _monitor_thread = threading.Thread(target=_monitor_loop, args=(baud, interval), daemon=True)
-    _monitor_thread.start()
-
-
-def get_current_device():
-    with _mlock:
-        return _current_device
-
-
-@router.get("/device")
-def get_device():
-    """Información sobre el dispositivo MAV actual."""
-    device = get_current_device()
-    simulated = bool(device and isinstance(device, str) and device.upper() == 'SIM')
-
-    # Determinar si estamos conectados (siempre True para SIM)
-    connected = False
-    if mav is None:
-        connected = False
-    else:
-        if simulated:
-            connected = True
-        else:
-            try:
-                conn = getattr(mav, 'conn', None)
-                connected = bool(conn and getattr(conn, 'is_connected', lambda: False)())
-            except Exception:
-                connected = False
-
-    return {
-        "success": True,
-        "data": {
-            "device": device,
-            "connected": connected,
-            "simulated": simulated
-        }
-    }
-
-
-def get_mav():
-    """Obtener el controlador inicializado o lanzar HTTP 503 si no está disponible."""
-    if mav is None:
-        raise HTTPException(status_code=503, detail="MAV controller not available")
-    return mav
-
-
-@router.websocket('/ws/telemetry')
-async def telemetry_ws(websocket: WebSocket):
-    """WebSocket que emite telemetría cada segundo."""
-    await websocket.accept()
-    try:
-        while True:
-            try:
-                data = get_mav().get_telemetry()
-            except Exception as e:
-                data = {"error": str(e)}
-
-            await websocket.send_json(data)
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
-        return
-
-# ============================================
-# MODELOS DE DATOS (Request Bodies)
-# ============================================
+class ArmRequest(BaseModel):
+    force: bool = False
 
 class TakeoffRequest(BaseModel):
-    altitude: float = 5.0  # metros
-
-class LandRequest(BaseModel):
-    pass  # No necesita parámetros
+    altitude: float = 10.0  # metros
 
 class ModeRequest(BaseModel):
-    mode: str  # STABILIZE, GUIDED, LOITER, RTL, LAND, etc
+    mode: str  # STABILIZE, GUIDED, RTL, etc.
 
 class GotoRequest(BaseModel):
-    lat: float
-    lon: float
-    alt: float = 10.0
+    latitude: float
+    longitude: float
+    altitude: float = 10.0
 
-class MissionRequest(BaseModel):
-    waypoints: list  # [{"lat": 4.123, "lon": -74.456, "alt": 10}, ...]
+class RCControlRequest(BaseModel):
+    """Control de joysticks - valores normalizados"""
+    throttle: Optional[float] = None  # 0.0 - 1.0 (arriba/abajo)
+    yaw: Optional[float] = None       # -1.0 - 1.0 (rotación)
+    pitch: Optional[float] = None     # -1.0 - 1.0 (adelante/atrás)
+    roll: Optional[float] = None      # -1.0 - 1.0 (izquierda/derecha)
 
-# ============================================
-# ENDPOINTS DE TELEMETRÍA (GET)
-# ============================================
+class EmergencyRequest(BaseModel):
+    action: str  # "STOP", "RTL", "LAND", "KILL"
 
-@router.get("/telemetry")
-def get_telemetry():
-    """Obtener toda la telemetría del dron"""
-    try:
-        telemetry = get_mav().get_telemetry()
-        return {
-            "success": True,
-            "data": telemetry
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting telemetry: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get telemetry: {str(e)}")
+# ============ Helper ============
+
+def get_mav_controller():
+    """Obtiene la instancia del controlador MAVLink"""
+    from main import mav_controller
+    if not mav_controller:
+        raise HTTPException(status_code=503, detail="MAVLink no conectado")
+    return mav_controller
+
+# ============ Estado y Telemetría ============
 
 @router.get("/status")
-def get_status():
-    """Estado rápido del dron (conexión, armado, modo)"""
+async def get_status():
+    """Estado general del dron"""
     try:
-        status = get_mav().get_status()
-        return {
-            "success": True,
-            "data": status
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting status: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
-
-@router.get("/battery")
-def get_battery():
-    """Información detallada de la batería"""
-    try:
-        battery = get_mav().get_battery()
-        return {
-            "success": True,
-            "data": battery
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting battery: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get battery: {str(e)}")
-
-@router.get("/gps")
-def get_gps():
-    """Información GPS del dron"""
-    try:
-        gps = get_mav().get_gps()
-        return {
-            "success": True,
-            "data": gps
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting GPS: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get GPS: {str(e)}")
-
-@router.get("/preflight")
-def preflight_checks():
-    """Verificaciones pre-vuelo"""
-    try:
-        checks = get_mav().preflight_checks()
-        all_ok = all(checks.values())
+        mav = get_mav_controller()
         
         return {
-            "success": True,
-            "ready_to_fly": all_ok,
-            "checks": checks
+            "connected": mav.is_connected(),
+            "armed": mav.is_armed(),
+            "mode": mav.get_mode(),
+            "system_status": mav.get_system_status(),
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in preflight checks: {e}")
-        raise HTTPException(status_code=500, detail=f"Preflight checks failed: {str(e)}")
-
-# ============================================
-# ENDPOINTS DE COMANDOS (POST)
-# ============================================
-
-@router.post("/command/arm")
-def arm():
-    """Armar motores del dron"""
-    try:
-        get_mav().arm()
-        return {"success": True, "message": "Armando motores..."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error arming: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to arm: {str(e)}")
-
-@router.post("/command/disarm")
-def disarm():
-    """Desarmar motores del dron"""
-    try:
-        get_mav().disarm()
-        return {"success": True, "message": "Desarmando motores..."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error disarming: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to disarm: {str(e)}")
-
-@router.post("/command/takeoff")
-def takeoff(request: TakeoffRequest):
-    """Despegar a altitud especificada"""
-    try:
-        # Verificaciones pre-vuelo
-        checks = get_mav().preflight_checks()
-        if not all(checks.values()):
-            failed = [k for k, v in checks.items() if not v]
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Preflight checks failed: {', '.join(failed)}"
-            )
-        
-        get_mav().takeoff(request.altitude)
-        return {
-            "success": True, 
-            "message": f"Despegando a {request.altitude}m"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error taking off: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to takeoff: {str(e)}")
-
-@router.post("/command/land")
-def land():
-    """Aterrizar el dron"""
-    try:
-        get_mav().land()
-        return {"success": True, "message": "Aterrizando..."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error landing: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to land: {str(e)}")
-
-@router.post("/command/rtl")
-def rtl():
-    """Return to Launch - Regresar al punto de despegue"""
-    try:
-        get_mav().rtl()
-        return {"success": True, "message": "Regresando a casa..."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error RTL: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to RTL: {str(e)}")
-
-@router.post("/command/mode")
-def change_mode(request: ModeRequest):
-    """Cambiar modo de vuelo"""
-    try:
-        valid_modes = ['STABILIZE', 'LOITER', 'GUIDED', 'RTL', 'LAND', 'AUTO']
-        
-        if request.mode.upper() not in valid_modes:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid mode. Valid modes: {', '.join(valid_modes)}"
-            )
-        
-        get_mav().set_mode(request.mode.upper())
-        return {
-            "success": True, 
-            "message": f"Modo cambiado a {request.mode}"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error changing mode: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to change mode: {str(e)}")
-
-@router.post("/command/goto")
-def goto(request: GotoRequest):
-    """Ir a coordenadas GPS específicas"""
-    try:
-        get_mav().goto_position(request.lat, request.lon, request.alt)
-        return {
-            "success": True, 
-            "message": f"Yendo a ({request.lat}, {request.lon}) a {request.alt}m"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error going to position: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to goto: {str(e)}")
-
-@router.post("/command/emergency")
-def emergency_stop():
-    """Botón de emergencia - RTL inmediato"""
-    try:
-        logger.warning("🚨 EMERGENCY STOP ACTIVATED")
-        get_mav().emergency_stop()
-        return {
-            "success": True, 
-            "message": "🚨 EMERGENCIA - RTL activado"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in emergency stop: {e}")
-        # Último recurso: desarmar
-        try:
-            get_mav().disarm()
-            return {
-                "success": False, 
-                "message": "RTL falló, motores desarmados",
-                "error": str(e)
-            }
-        except:
-            raise HTTPException(status_code=500, detail=f"Emergency stop failed: {str(e)}")
-
-# ============================================
-# ENDPOINTS DE MISIONES (Waypoints)
-# ============================================
-
-@router.post("/mission/upload")
-def upload_mission(request: MissionRequest):
-    """Subir misión de waypoints al dron"""
-    try:
-        if not request.waypoints:
-            raise HTTPException(status_code=400, detail="No waypoints provided")
-        
-        get_mav().upload_mission(request.waypoints)
-        return {
-            "success": True, 
-            "message": f"Misión cargada con {len(request.waypoints)} waypoints"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading mission: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload mission: {str(e)}")
-
-@router.post("/mission/start")
-def start_mission():
-    """Iniciar misión cargada (cambiar a modo AUTO)"""
-    try:
-        get_mav().start_mission()
-        return {"success": True, "message": "Misión iniciada"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error starting mission: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start mission: {str(e)}")
-
-@router.post("/mission/pause")
-def pause_mission():
-    """Pausar misión actual"""
-    try:
-        get_mav().set_mode('LOITER')
-        return {"success": True, "message": "Misión pausada"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error pausing mission: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to pause mission: {str(e)}")
-
-@router.post("/mission/resume")
-def resume_mission():
-    """Reanudar misión"""
-    try:
-        get_mav().set_mode('AUTO')
-        return {"success": True, "message": "Misión reanudada"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error resuming mission: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to resume mission: {str(e)}")
-
-@router.post("/mission/clear")
-def clear_mission():
-    """Limpiar misión cargada"""
-    try:
-        get_mav().clear_mission()
-        return {"success": True, "message": "Misión eliminada"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error clearing mission: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to clear mission: {str(e)}")
-
-# ============================================
-# ENDPOINTS AVANZADOS
-# ============================================
-
-@router.post("/command/circle")
-def circle_mode(radius: float = 10.0):
-    """Modo círculo - Dar vueltas en círculo"""
-    try:
-        get_mav().set_mode('CIRCLE')
-        # Configurar radio del círculo
-        get_mav().set_param('CIRCLE_RADIUS', radius)
-        return {
-            "success": True, 
-            "message": f"Modo círculo activado (radio: {radius}m)"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in circle mode: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to activate circle mode: {str(e)}")
-
-@router.get("/logs")
-def get_logs():
-    """Obtener logs de vuelo"""
-    try:
-        logs = get_mav().get_flight_logs()
-        return {"success": True, "logs": logs}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting logs: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get logs: {str(e)}")
-
-@router.get("/device")
-def get_device():
-    """Información del dispositivo MAV actual y estado de conexión."""
-    try:
-        dev = get_current_device()
-        result = {"device": dev}
-        try:
-            m = get_mav()
-            simulated = getattr(m, '_sim', None) is not None
-            result["simulated"] = simulated
-            if simulated:
-                result["connected"] = True
-            else:
-                conn = getattr(m, 'conn', None)
-                result["connected"] = conn.is_connected() if conn else False
-        except HTTPException:
-            # controller not initialized
-            result["simulated"] = (dev == 'SIM')
-            result["connected"] = False
-        return {"success": True, "data": result}
-    except Exception as e:
-        logger.error(f"Error getting device info: {e}")
+        logger.error(f"Error obteniendo status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/parameters/{param_name}")
-def get_parameter(param_name: str):
-    """Obtener valor de un parámetro del dron"""
+@router.get("/telemetry")
+async def get_telemetry():
+    """Telemetría completa del dron"""
     try:
-        value = get_mav().get_param(param_name)
+        mav = get_mav_controller()
+        
+        attitude = mav.telemetry.get_attitude()
+        gps = mav.telemetry.get_gps()
+        battery = mav.telemetry.get_battery()
+        velocity = mav.telemetry.get_velocity()
+        
         return {
-            "success": True, 
-            "parameter": param_name,
-            "value": value
+            "armed": mav.is_armed(),
+            "mode": mav.get_mode(),
+            "altitude": gps.get("alt", 0) if gps else 0,
+            "latitude": gps.get("lat", 0) if gps else 0,
+            "longitude": gps.get("lon", 0) if gps else 0,
+            "roll": attitude.get("roll", 0) if attitude else 0,
+            "pitch": attitude.get("pitch", 0) if attitude else 0,
+            "yaw": attitude.get("yaw", 0) if attitude else 0,
+            "battery_voltage": battery.get("voltage", 0) if battery else 0,
+            "battery_remaining": battery.get("remaining", 0) if battery else 0,
+            "ground_speed": velocity.get("ground_speed", 0) if velocity else 0,
+            "satellites": gps.get("satellites_visible", 0) if gps else 0,
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error getting parameter: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get parameter: {str(e)}")
+        logger.error(f"Error obteniendo telemetría: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/parameters/{param_name}")
-def set_parameter(param_name: str, value: float):
-    """Establecer valor de un parámetro del dron"""
+# ============ Control Básico ============
+
+@router.post("/arm")
+async def arm_drone(request: ArmRequest):
+    """Arma los motores"""
     try:
-        get_mav().set_param(param_name, value)
+        mav = get_mav_controller()
+        
+        if mav.is_armed() and not request.force:
+            return {"success": False, "message": "Dron ya está armado"}
+        
+        success = await mav.arm()
+        
         return {
-            "success": True, 
-            "message": f"Parámetro {param_name} = {value}"
+            "success": success,
+            "message": "Dron armado" if success else "Error armando",
+            "armed": mav.is_armed()
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error setting parameter: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to set parameter: {str(e)}")
+        logger.error(f"Error armando: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/disarm")
+async def disarm_drone():
+    """Desarma los motores"""
+    try:
+        mav = get_mav_controller()
+        
+        if not mav.is_armed():
+            return {"success": False, "message": "Dron ya está desarmado"}
+        
+        success = await mav.disarm()
+        
+        return {
+            "success": success,
+            "message": "Dron desarmado" if success else "Error desarmando",
+            "armed": mav.is_armed()
+        }
+    except Exception as e:
+        logger.error(f"Error desarmando: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/takeoff")
+async def takeoff(request: TakeoffRequest):
+    """Despega a altitud específica"""
+    try:
+        mav = get_mav_controller()
+        
+        if not mav.is_armed():
+            return {"success": False, "message": "Dron no está armado"}
+        
+        if request.altitude < 2 or request.altitude > 100:
+            return {"success": False, "message": "Altitud debe estar entre 2 y 100 metros"}
+        
+        success = await mav.takeoff(request.altitude)
+        
+        return {
+            "success": success,
+            "message": f"Despegando a {request.altitude}m" if success else "Error despegando",
+            "target_altitude": request.altitude
+        }
+    except Exception as e:
+        logger.error(f"Error en despegue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/land")
+async def land():
+    """Aterriza el dron"""
+    try:
+        mav = get_mav_controller()
+        
+        success = await mav.land()
+        
+        return {
+            "success": success,
+            "message": "Aterrizando" if success else "Error aterrizando"
+        }
+    except Exception as e:
+        logger.error(f"Error aterizando: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/rtl")
+async def return_to_launch():
+    """Return To Launch - Regresa a home"""
+    try:
+        mav = get_mav_controller()
+        
+        success = await mav.return_to_launch()
+        
+        return {
+            "success": success,
+            "message": "Regresando a home" if success else "Error en RTL"
+        }
+    except Exception as e:
+        logger.error(f"Error en RTL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ Control de Joysticks (RC Override) ============
+
+@router.post("/rc/control")
+async def rc_control(request: RCControlRequest):
+    """
+    Control manual con joysticks
+    Envía comandos RC_CHANNELS_OVERRIDE al dron
+    """
+    try:
+        mav = get_mav_controller()
+        
+        # Verificar que el RC controller esté inicializado
+        if not hasattr(mav, 'rc') or not mav.rc:
+            return {"success": False, "message": "RC Controller no inicializado"}
+        
+        # Aplicar controles
+        mav.rc.set_controls(
+            throttle=request.throttle,
+            yaw=request.yaw,
+            pitch=request.pitch,
+            roll=request.roll
+        )
+        
+        return {
+            "success": True,
+            "message": "Controles RC actualizados",
+            "values": mav.rc.get_current_values()
+        }
+    except Exception as e:
+        logger.error(f"Error en RC control: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/rc/reset")
+async def rc_reset():
+    """Resetea todos los controles RC a neutral"""
+    try:
+        mav = get_mav_controller()
+        
+        if hasattr(mav, 'rc') and mav.rc:
+            mav.rc.reset_controls()
+            return {"success": True, "message": "Controles RC reseteados"}
+        else:
+            return {"success": False, "message": "RC Controller no disponible"}
+    except Exception as e:
+        logger.error(f"Error reseteando RC: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/rc/values")
+async def get_rc_values():
+    """Obtiene los valores actuales de los controles RC"""
+    try:
+        mav = get_mav_controller()
+        
+        if hasattr(mav, 'rc') and mav.rc:
+            return {
+                "success": True,
+                "values": mav.rc.get_current_values()
+            }
+        else:
+            return {"success": False, "message": "RC Controller no disponible"}
+    except Exception as e:
+        logger.error(f"Error obteniendo valores RC: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ Emergencias ============
+
+@router.post("/emergency")
+async def emergency_action(request: EmergencyRequest):
+    """
+    Acciones de emergencia
+    - STOP: Detiene todos los motores (BRAKE)
+    - RTL: Return to launch
+    - LAND: Aterrizaje inmediato
+    - KILL: Motor kill (PELIGROSO - solo en emergencia extrema)
+    """
+    try:
+        mav = get_mav_controller()
+        action = request.action.upper()
+        
+        if action == "STOP":
+            # Modo BRAKE o LOITER
+            success = await mav.set_mode("LOITER")
+            # Resetear controles RC
+            if hasattr(mav, 'rc') and mav.rc:
+                mav.rc.reset_controls()
+            message = "STOP: Dron en modo LOITER" if success else "Error en STOP"
+            
+        elif action == "RTL":
+            success = await mav.return_to_launch()
+            message = "RTL activado" if success else "Error activando RTL"
+            
+        elif action == "LAND":
+            success = await mav.land()
+            message = "Aterrizaje de emergencia activado" if success else "Error aterrizando"
+            
+        elif action == "KILL":
+            # MOTOR KILL - solo en emergencia extrema
+            logger.warning("⚠️ MOTOR KILL ACTIVADO")
+            success = await mav.kill_motors()
+            message = "MOTORES DETENIDOS" if success else "Error en MOTOR KILL"
+            
+        else:
+            return {"success": False, "message": f"Acción desconocida: {action}"}
+        
+        return {
+            "success": success,
+            "action": action,
+            "message": message
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en emergencia {request.action}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ Cambio de Modo ============
+
+@router.post("/mode")
+async def set_mode(request: ModeRequest):
+    """Cambia el modo de vuelo"""
+    try:
+        mav = get_mav_controller()
+        
+        valid_modes = ["STABILIZE", "GUIDED", "RTL", "LOITER", "AUTO", "ALT_HOLD", "LAND", "BRAKE"]
+        
+        if request.mode.upper() not in valid_modes:
+            return {
+                "success": False,
+                "message": f"Modo inválido. Modos válidos: {', '.join(valid_modes)}"
+            }
+        
+        success = await mav.set_mode(request.mode.upper())
+        
+        return {
+            "success": success,
+            "message": f"Modo cambiado a {request.mode}" if success else "Error cambiando modo",
+            "mode": mav.get_mode()
+        }
+    except Exception as e:
+        logger.error(f"Error cambiando modo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ Navegación ============
+
+@router.post("/goto")
+async def goto_location(request: GotoRequest):
+    """Navega a coordenadas GPS específicas"""
+    try:
+        mav = get_mav_controller()
+        
+        if not mav.is_armed():
+            return {"success": False, "message": "Dron debe estar armado"}
+        
+        success = await mav.goto(request.latitude, request.longitude, request.altitude)
+        
+        return {
+            "success": success,
+            "message": f"Navegando a ({request.latitude}, {request.longitude})" if success else "Error navegando",
+            "target": {
+                "latitude": request.latitude,
+                "longitude": request.longitude,
+                "altitude": request.altitude
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error navegando: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,76 +1,54 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React, { useRef } from 'react';
+import { View, Dimensions, StyleSheet, FlatList } from 'react-native';
+import { DroneProvider } from './src/context/DroneContext';
+import { DroneControlScreen } from './src/screens/DroneControlScreen';
+import { TelemetryScreen } from './src/screens/TelemetryScreen';
 
-import React, { useEffect, useState } from 'react';
-import { StatusBar, StyleSheet, Text, View, ScrollView } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+const SCREENS = [
+  { id: 'control', component: DroneControlScreen },
+  { id: 'telemetry', component: TelemetryScreen },
+];
 
-  return (
-    <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
-    </SafeAreaProvider>
-  );
-}
+export default function App() {
+  const flatListRef = useRef<FlatList>(null);
 
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const [telemetry, setTelemetry] = useState<any>({});
-
-  useEffect(() => {
-    const ws = new WebSocket('ws://10.0.2.2:8000/ws/telemetry'); // Para emulador Android
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      setTelemetry(data);
-    };
-
-    ws.onopen = () => {
-      console.log('Connected to WebSocket');
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket closed');
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, []);
+  const renderScreen = ({ item }: { item: typeof SCREENS[0] }) => {
+    const ScreenComponent = item.component;
+    return (
+      <View style={styles.screen}>
+        <ScreenComponent />
+      </View>
+    );
+  };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Drone Telemetry Mobile</Text>
-      <ScrollView>
-        <Text style={styles.data}>{JSON.stringify(telemetry, null, 2)}</Text>
-      </ScrollView>
-    </View>
+    <DroneProvider>
+      <View style={styles.container}>
+        <FlatList
+          ref={flatListRef}
+          data={SCREENS}
+          renderItem={renderScreen}
+          keyExtractor={(item) => item.id}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          bounces={false}
+          scrollEventThrottle={16}
+          decelerationRate="fast"
+        />
+      </View>
+    </DroneProvider>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 20,
+    backgroundColor: '#0a0a0f',
   },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
-  },
-  data: {
-    fontSize: 16,
+  screen: {
+    width: SCREEN_WIDTH,
   },
 });
-
-export default App;
