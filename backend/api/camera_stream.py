@@ -2,7 +2,10 @@
 Streaming de video desde Intel RealSense D435i
 Transmite video en tiempo real vía HTTP MJPEG
 """
-import pyrealsense2 as rs
+try:
+    import pyrealsense2 as rs
+except ImportError:
+    rs = None
 import numpy as np
 import cv2
 import threading
