@@ -8,6 +8,17 @@ Módulo minimalista para Raspberry Pi que se conecta a Pixhawk vía USB/UART.
 - Pixhawk/ArduCopter
 - Cable USB (Pixhawk-to-RPi) o conexión UART
 
+### Permisos de puerto serial (importante)
+
+En Raspberry Linux el dispositivo serial (ej. `/dev/ttyUSB0`) requiere permisos de grupo `dialout`. Ejecuta:
+
+```bash
+sudo usermod -aG dialout $(whoami)
+# Cierra sesión o reinicia para aplicar
+```
+
+Alternativamente puedes ejecutar `main.py` con `sudo` (no recomendado). Para acceso persistente sin sudo considera una regla `udev`.
+
 ## 🚀 Instalación rápida
 
 ```bash
@@ -15,11 +26,11 @@ Módulo minimalista para Raspberry Pi que se conecta a Pixhawk vía USB/UART.
 cd /home/pi/drone/
 git clone <repo> .
 
-# Instalar dependencias
+# Instalar dependencias (recomendado dentro de un virtualenv)
 pip install -r requirements.txt
 
-# Ejecutar prueba
-python3 main.py
+# Ejecutar prueba (puedes configurar puerto/baud con variables de entorno)
+MAVLINK_DEVICE=/dev/ttyUSB0 MAVLINK_BAUD=57600 python3 main.py
 ```
 
 ## 📁 Estructura
@@ -34,11 +45,11 @@ raspberry/
 
 ## ⚙️ Configurar puerto y baudrate
 
-Edita `main.py` línea 26-27:
+Edita `main.py` o usa variables de entorno:
 
 ```python
-PORT = "/dev/ttyUSB0"  # Ajusta si es diferente
-BAUD = 57600           # Ajusta según tu config
+# Por defecto usa /dev/ttyUSB0 y 57600, pero puedes exportar env vars:
+# MAVLINK_DEVICE and MAVLINK_BAUD
 ```
 
 ### Detectar puerto en Raspberry
@@ -54,7 +65,7 @@ Busca `/dev/ttyUSB*` o `/dev/ttyAMA*`
 ```python
 from connection import MAVLinkConnection
 
-# Conectar
+# Conectar (mejor usar env vars para no editar el script)
 drone = MAVLinkConnection("/dev/ttyUSB0", 57600)
 
 # Verificar conexión

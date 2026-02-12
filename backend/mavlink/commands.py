@@ -19,7 +19,6 @@ class DroneCommands:
             connection: Instancia de MAVLinkConnection
         """
         self.conn = connection
-        self.master = connection.master
     
     # ============================================
     # COMANDOS BÁSICOS
@@ -29,15 +28,20 @@ class DroneCommands:
         """Armar motores"""
         logger.info("🔴 ARM - Armando motores...")
         
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0,  # confirmation
-            1,  # 1 = ARM
-            0, 0, 0, 0, 0, 0
-        )
-        
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0,  # confirmation
+                1,  # 1 = ARM
+                0, 0, 0, 0, 0, 0
+            )
+
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM):
             logger.info("✅ Motores armados")
             return True
@@ -54,16 +58,21 @@ class DroneCommands:
         """
         logger.info("🟢 DISARM - Desarmando motores...")
         
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0,
-            0,  # 0 = DISARM
-            21196 if force else 0,  # Magic number para forzar
-            0, 0, 0, 0, 0
-        )
-        
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0,
+                0,  # 0 = DISARM
+                21196 if force else 0,  # Magic number para forzar
+                0, 0, 0, 0, 0
+            )
+
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM):
             logger.info("✅ Motores desarmados")
             return True
@@ -81,13 +90,17 @@ class DroneCommands:
         logger.info(f"🔄 Cambiando a modo: {mode_name}")
         
         # Verificar que el modo existe
-        if mode_name not in self.master.mode_mapping():
-            valid_modes = list(self.master.mode_mapping().keys())
-            raise ValueError(f"Modo inválido. Modos válidos: {valid_modes}")
-        
-        mode_id = self.master.mode_mapping()[mode_name]
-        
-        self.master.set_mode(mode_id)
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            if mode_name not in master.mode_mapping():
+                valid_modes = list(master.mode_mapping().keys())
+                raise ValueError(f"Modo inválido. Modos válidos: {valid_modes}")
+
+            mode_id = master.mode_mapping()[mode_name]
+            master.set_mode(mode_id)
         
         # Verificar cambio
         time.sleep(0.5)
@@ -108,23 +121,28 @@ class DroneCommands:
         # Paso 1: Modo GUIDED
         self.set_mode('GUIDED')
         time.sleep(1)
-        
+
         # Paso 2: Armar
         if not self.arm():
             raise Exception("No se pudo armar el dron")
         time.sleep(2)
-        
-        # Paso 3: Comando takeoff
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-            0,
-            0, 0, 0, 0,  # Params no usados
-            0, 0,        # Lat/Lon (0 = posición actual)
-            altitude
-        )
-        
+
+        # Paso 3: Comando takeoff (usar master dinámico)
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                0,
+                0, 0, 0, 0,  # Params no usados
+                0, 0,        # Lat/Lon (0 = posición actual)
+                altitude
+            )
+
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF):
             logger.info(f"✅ Despegando a {altitude}m")
             return True
@@ -136,15 +154,20 @@ class DroneCommands:
         """Aterrizar en posición actual"""
         logger.info("🛬 LAND - Aterrizando...")
         
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_LAND,
-            0,
-            0, 0, 0, 0,
-            0, 0, 0  # Lat/Lon/Alt (0 = actual)
-        )
-        
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_NAV_LAND,
+                0,
+                0, 0, 0, 0,
+                0, 0, 0  # Lat/Lon/Alt (0 = actual)
+            )
+
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_NAV_LAND):
             logger.info("✅ Aterrizando")
             return True
@@ -182,21 +205,25 @@ class DroneCommands:
         if current_mode != 'GUIDED':
             self.set_mode('GUIDED')
             time.sleep(1)
-        
-        # Enviar posición objetivo
-        self.master.mav.set_position_target_global_int_send(
-            0,  # timestamp
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-            int(0b110111111000),  # type_mask (solo posición)
-            int(lat * 1e7),
-            int(lon * 1e7),
-            alt,
-            0, 0, 0,  # vx, vy, vz
-            0, 0, 0,  # afx, afy, afz
-            0, 0      # yaw, yaw_rate
-        )
+        # Enviar posición objetivo usando master dinámico
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+
+            master.mav.set_position_target_global_int_send(
+                0,  # timestamp
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                int(0b110111111000),  # type_mask (solo posición)
+                int(lat * 1e7),
+                int(lon * 1e7),
+                alt,
+                0, 0, 0,  # vx, vy, vz
+                0, 0, 0,  # afx, afy, afz
+                0, 0      # yaw, yaw_rate
+            )
         
         logger.info("✅ Waypoint enviado")
         return True

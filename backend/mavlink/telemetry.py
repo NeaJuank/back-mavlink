@@ -22,7 +22,6 @@ class DroneTelemetry:
             persist_interval: segundos entre guardados automáticos en BD (0 o None para desactivar)
         """
         self.conn = connection
-        self.master = connection.master
         
         # Almacenamiento de datos
         self.data = {
@@ -124,8 +123,8 @@ class DroneTelemetry:
                     time.sleep(0.5)
                     continue
                 
-                # Leer mensaje (no bloqueante)
-                msg = self.master.recv_match(blocking=False)
+                # Leer mensaje (no bloqueante) a través de la conexión (usa lock internamente)
+                msg = self.conn.recv_match(blocking=False)
                 
                 if msg:
                     self._process_message(msg)
@@ -269,7 +268,7 @@ class DroneTelemetry:
             checks["battery_ok"] = True
         
         # EKF
-        ekf = self.master.recv_match(type='EKF_STATUS_REPORT', blocking=True, timeout=2)
+        ekf = self.conn.recv_match(type='EKF_STATUS_REPORT', blocking=True, timeout=2)
         if ekf and (ekf.flags & 0x01):
             checks["ekf_ok"] = True
         
@@ -278,7 +277,7 @@ class DroneTelemetry:
             checks["home_set"] = True
         
         # Sensores
-        sys_status = self.master.recv_match(type='SYS_STATUS', blocking=True, timeout=2)
+        sys_status = self.conn.recv_match(type='SYS_STATUS', blocking=True, timeout=2)
         if sys_status:
             sensors_ok = (sys_status.onboard_control_sensors_health &
                          sys_status.onboard_control_sensors_enabled) == \
