@@ -42,6 +42,12 @@ def main():
         success = rest.init_mav(device, baud)
         if not success:
             logger.error('rest.init_mav returned False')
+        else:
+            # Start monitoring thread so behavior matches original startup
+            try:
+                rest.start_monitoring(baud, interval=5)
+            except Exception:
+                logger.debug('Could not start rest monitoring thread')
     except Exception as e:
         logger.exception(f"rest.init_mav raised exception: {e}")
         # Continue to start the server so the API is available (as in original design)
