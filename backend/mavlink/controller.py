@@ -48,6 +48,11 @@ class MAVController:
             return
 
         self.conn = MAVLinkConnection(device, baud)
+        # Habilitar reconexión automática en segundo plano
+        try:
+            self.conn.start_auto_reconnect()
+        except Exception:
+            logger.debug("No se pudo iniciar auto-reconnect automáticamente")
         self.cmd = DroneCommands(self.conn)
         self.telemetry = DroneTelemetry(self.conn)
         self.master = self.conn.master
