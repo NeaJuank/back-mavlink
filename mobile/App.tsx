@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { StatusBar, StyleSheet, Text, View, ScrollView, Platform } from 'react-native';
+import { StatusBar, StyleSheet, Text, View, ScrollView, Platform, useColorScheme } from 'react-native';
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
