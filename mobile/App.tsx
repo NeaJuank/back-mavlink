@@ -20,35 +20,41 @@ export default function App() {
       <View style={styles.screen}>
         <ScreenComponent />
       </View>
-    );
-  };
+    useEffect(() => {
+      /*
+        Configuración automática de backend según plataforma y entorno:
+        - Emulador Android: 10.0.2.2
+        - Emulador iOS: localhost
+        - Dispositivo físico: IP de WSL2 (ajusta si cambia)
+      */
+      const WSL2_IP = '172.21.171.70'; // Cambia si tu WSL2 IP cambia
 
-  return (
-    <DroneProvider>
-      <View style={styles.container}>
-        <FlatList
-          ref={flatListRef}
-          data={SCREENS}
-          renderItem={renderScreen}
-          keyExtractor={(item) => item.id}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          bounces={false}
-          scrollEventThrottle={16}
-          decelerationRate="fast"
-        />
-      </View>
-    </DroneProvider>
-  );
-}
+      let host = WSL2_IP;
+      if (Platform.OS === 'android') {
+        host = '10.0.2.2';
+      } else if (Platform.OS === 'ios') {
+        host = 'localhost';
+      }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0f',
-  },
-  screen: {
-    width: SCREEN_WIDTH,
-  },
-});
+      const wsUrl = `ws://${host}:8000/api/ws/telemetry`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        setTelemetry(data);
+      };
+
+      ws.onopen = () => {
+        console.log('Connected to WebSocket', wsUrl);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+      };
+
+      return () => {
+        try {
+          ws.close();
+        } catch (e) {}
+      };
+    }, []);
