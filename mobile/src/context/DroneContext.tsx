@@ -1,9 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-
-// ⚠️ CONFIGURACIÓN - Cambiar a la IP de tu Raspberry Pi
-const API_URL = 'http://192.168.1.100:8000';
-const WS_URL = 'ws://192.168.1.100:8000/ws/telemetry';
+import { API_URL, WS_URL } from '../config';
 
 interface Telemetry {
   armed: boolean;

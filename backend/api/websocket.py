@@ -95,7 +95,7 @@ async def get_telemetry_data(mav_controller) -> dict:
             "battery_remaining": battery.get("remaining", 0) if battery else 0,
             "ground_speed": velocity.get("ground_speed", 0) if velocity else 0,
             "vertical_speed": velocity.get("vertical_speed", 0) if velocity else 0,
-            "satellites": gps.get("satellites_visible", 0) if gps else 0,
+            "satellites": gps.get("satellites", gps.get("satellites_visible", 0)) if gps else 0,
             "hdop": gps.get("hdop", 0) if gps else 0,
         }
     except Exception as e:
@@ -111,33 +111,49 @@ async def process_command(command: dict, mav_controller):
     
     logger.info(f"Procesando comando: {cmd_type} con params: {params}")
     
+    if not mav_controller:
+        return {"success": False, "message": "MAVLink no conectado"}
+
     try:
         if cmd_type == "ARM":
-            success = await mav_controller.arm()
+            success = await asyncio.to_thread(mav_controller.arm)
             return {"success": success, "message": "Drone armado" if success else "Error armando"}
             
         elif cmd_type == "DISARM":
-            success = await mav_controller.disarm()
+            success = await asyncio.to_thread(mav_controller.disarm)
             return {"success": success, "message": "Drone desarmado" if success else "Error desarmando"}
             
         elif cmd_type == "TAKEOFF":
             altitude = params.get("altitude", 10)
-            success = await mav_controller.takeoff(altitude)
+            success = await asyncio.to_thread(mav_controller.takeoff, altitude)
             return {"success": success, "message": f"Despegando a {altitude}m" if success else "Error despegando"}
             
         elif cmd_type == "LAND":
-            success = await mav_controller.land()
+            success = await asyncio.to_thread(mav_controller.land)
             return {"success": success, "message": "Aterrizando" if success else "Error aterrizando"}
             
         elif cmd_type == "RTL":
-            success = await mav_controller.return_to_launch()
+            success = await asyncio.to_thread(mav_controller.return_to_launch)
             return {"success": success, "message": "Regresando a home" if success else "Error en RTL"}
             
         elif cmd_type == "SET_MODE":
             mode = params.get("mode", "STABILIZE")
-            success = await mav_controller.set_mode(mode)
+            success = await asyncio.to_thread(mav_controller.set_mode, mode)
             return {"success": success, "message": f"Modo cambiado a {mode}" if success else "Error cambiando modo"}
             
+        elif cmd_type == "RC_CONTROL":
+            # Joystick: throttle, yaw, pitch, roll (la app móvil envía este comando)
+            throttle = params.get("throttle")
+            yaw = params.get("yaw")
+            pitch = params.get("pitch")
+            roll = params.get("roll")
+            if not getattr(mav_controller, "rc", None):
+                return {"success": False, "message": "RC no disponible (ej. modo SIM)"}
+            mav_controller.rc.set_controls(
+                throttle=throttle, yaw=yaw, pitch=pitch, roll=roll
+            )
+            return {"success": True, "message": "RC actualizado"}
+
         elif cmd_type == "THROTTLE":
             value = params.get("value", 0)
             mav_controller.rc.set_throttle(value)
@@ -162,7 +178,7 @@ async def process_command(command: dict, mav_controller):
             lat = params.get("latitude")
             lon = params.get("longitude")
             alt = params.get("altitude", 10)
-            success = await mav_controller.goto(lat, lon, alt)
+            success = await asyncio.to_thread(mav_controller.goto, lat, lon, alt)
             return {"success": success, "message": f"Navegando a ({lat}, {lon})" if success else "Error navegando"}
             
         else:
@@ -181,9 +197,10 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await manager.connect(websocket)
     
-    # Obtener el controlador MAVLink desde la app
-    from main import mav_controller
-    
+    # Obtener el controlador MAVLink desde rest
+    from backend.api import rest
+    mav_controller = rest.mav
+
     try:
         while True:
             # Esperar mensaje del cliente

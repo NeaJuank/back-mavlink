@@ -12,9 +12,9 @@ import {
 } from 'react-native';
 import { Joystick } from '../components/Joystick';
 import { useDrone } from '../context/DroneContext';
+import { API_URL } from '../config';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const API_URL = 'http://192.168.1.100:8000'; // ⚠️ Cambiar a IP de Raspberry Pi
 
 export const DroneControlScreen: React.FC = () => {
   const { telemetry, connected, armDrone, disarmDrone, takeoff, land, emergency, setJoystick } =

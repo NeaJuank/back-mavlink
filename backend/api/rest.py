@@ -5,11 +5,47 @@ API completa para control desde Mobile/Frontend
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import asyncio
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["drone"])
+router = APIRouter(tags=["drone"])  # prefix /api se añade en main.py
+
+# Instancia global del controlador MAVLink (se asigna en init_mav)
+mav = None
+_monitor_thread = None
+
+# ============ Inicialización MAVLink ============
+
+def init_mav(device: str, baud: int) -> bool:
+    """Crea y asigna el controlador MAVLink. Debe llamarse al arranque (p. ej. desde main.py)."""
+    global mav
+    try:
+        from backend.mavlink.controller import MAVController
+        mav = MAVController(device, baud)
+        logger.info("MAVLink controller initialized: device=%s baud=%s", device, baud)
+        return True
+    except Exception as e:
+        logger.exception("Error initializing MAV controller: %s", e)
+        mav = None
+        return False
+
+
+def start_monitoring(baud: int, interval: int = 5) -> None:
+    """Inicia un hilo que monitorea la conexión MAVLink (opcional)."""
+    global _monitor_thread
+    def _monitor_loop():
+        import time
+        while _monitor_thread and getattr(_monitor_thread, "_running", True):
+            if mav and getattr(mav, "conn", None) and not mav.conn.is_connected():
+                logger.warning("MAVLink connection lost")
+            time.sleep(interval)
+    _monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
+    _monitor_thread._running = True
+    _monitor_thread.start()
+    logger.info("MAVLink monitoring started (interval=%ss)", interval)
 
 # ============ Schemas ============
 
@@ -41,10 +77,9 @@ class EmergencyRequest(BaseModel):
 
 def get_mav_controller():
     """Obtiene la instancia del controlador MAVLink"""
-    from main import mav_controller
-    if not mav_controller:
+    if mav is None:
         raise HTTPException(status_code=503, detail="MAVLink no conectado")
-    return mav_controller
+    return mav
 
 # ============ Estado y Telemetría ============
 
@@ -104,7 +139,7 @@ async def arm_drone(request: ArmRequest):
         if mav.is_armed() and not request.force:
             return {"success": False, "message": "Dron ya está armado"}
         
-        success = await mav.arm()
+        success = await asyncio.to_thread(mav.arm)
         
         return {
             "success": success,
@@ -124,7 +159,7 @@ async def disarm_drone():
         if not mav.is_armed():
             return {"success": False, "message": "Dron ya está desarmado"}
         
-        success = await mav.disarm()
+        success = await asyncio.to_thread(mav.disarm)
         
         return {
             "success": success,
@@ -147,7 +182,7 @@ async def takeoff(request: TakeoffRequest):
         if request.altitude < 2 or request.altitude > 100:
             return {"success": False, "message": "Altitud debe estar entre 2 y 100 metros"}
         
-        success = await mav.takeoff(request.altitude)
+        success = await asyncio.to_thread(mav.takeoff, request.altitude)
         
         return {
             "success": success,
@@ -164,14 +199,14 @@ async def land():
     try:
         mav = get_mav_controller()
         
-        success = await mav.land()
+        success = await asyncio.to_thread(mav.land)
         
         return {
             "success": success,
             "message": "Aterrizando" if success else "Error aterrizando"
         }
     except Exception as e:
-        logger.error(f"Error aterizando: {e}")
+        logger.error(f"Error aterrizando: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/rtl")
@@ -180,7 +215,7 @@ async def return_to_launch():
     try:
         mav = get_mav_controller()
         
-        success = await mav.return_to_launch()
+        success = await asyncio.to_thread(mav.return_to_launch)
         
         return {
             "success": success,
@@ -271,24 +306,24 @@ async def emergency_action(request: EmergencyRequest):
         
         if action == "STOP":
             # Modo BRAKE o LOITER
-            success = await mav.set_mode("LOITER")
+            success = await asyncio.to_thread(mav.set_mode, "LOITER")
             # Resetear controles RC
             if hasattr(mav, 'rc') and mav.rc:
                 mav.rc.reset_controls()
             message = "STOP: Dron en modo LOITER" if success else "Error en STOP"
             
         elif action == "RTL":
-            success = await mav.return_to_launch()
+            success = await asyncio.to_thread(mav.return_to_launch)
             message = "RTL activado" if success else "Error activando RTL"
             
         elif action == "LAND":
-            success = await mav.land()
+            success = await asyncio.to_thread(mav.land)
             message = "Aterrizaje de emergencia activado" if success else "Error aterrizando"
             
         elif action == "KILL":
             # MOTOR KILL - solo en emergencia extrema
             logger.warning("⚠️ MOTOR KILL ACTIVADO")
-            success = await mav.kill_motors()
+            success = await asyncio.to_thread(mav.kill_motors)
             message = "MOTORES DETENIDOS" if success else "Error en MOTOR KILL"
             
         else:
@@ -320,7 +355,7 @@ async def set_mode(request: ModeRequest):
                 "message": f"Modo inválido. Modos válidos: {', '.join(valid_modes)}"
             }
         
-        success = await mav.set_mode(request.mode.upper())
+        success = await asyncio.to_thread(mav.set_mode, request.mode.upper())
         
         return {
             "success": success,
@@ -342,7 +377,7 @@ async def goto_location(request: GotoRequest):
         if not mav.is_armed():
             return {"success": False, "message": "Dron debe estar armado"}
         
-        success = await mav.goto(request.latitude, request.longitude, request.altitude)
+        success = await asyncio.to_thread(mav.goto, request.latitude, request.longitude, request.altitude)
         
         return {
             "success": success,

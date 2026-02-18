@@ -45,6 +45,13 @@ class MAVController:
             self.start_mission = self._sim.start_mission
             self.clear_mission = self._sim.clear_mission
             self.get_flight_logs = self._sim.get_flight_logs
+            self.is_connected = lambda: True
+            self.is_armed = lambda: self._sim._state["armed"]
+            self.get_mode = lambda: self._sim._state["mode"]
+            self.get_system_status = lambda: 4
+            self.return_to_launch = self._sim.rtl
+            self.goto = lambda lat, lon, alt: self._sim.goto_position(lat, lon, alt)
+            self.kill_motors = lambda: False
 
             return
 
@@ -98,6 +105,39 @@ class MAVController:
 
     def goto_position(self, lat, lon, alt):
         return self.cmd.goto_position(lat, lon, alt)
+
+    # API esperada por REST/WebSocket
+    def is_connected(self):
+        return self.conn is not None and self.conn.is_connected()
+
+    def is_armed(self):
+        st = self.get_status()
+        return st.get("armed", False) if isinstance(st, dict) else False
+
+    def get_mode(self):
+        st = self.get_status()
+        return st.get("mode", "UNKNOWN") if isinstance(st, dict) else "UNKNOWN"
+
+    def get_system_status(self):
+        st = self.get_status()
+        return st.get("system_status", 0) if isinstance(st, dict) else 0
+
+    def return_to_launch(self):
+        return self.rtl()
+
+    def goto(self, lat, lon, alt):
+        return self.goto_position(lat, lon, alt)
+
+    def kill_motors(self):
+        """Emergencia: detener motores. Stub si no está en commands."""
+        try:
+            if self.cmd and hasattr(self.cmd, "kill_motors"):
+                return self.cmd.kill_motors()
+            logger.warning("kill_motors no implementado")
+            return False
+        except Exception as e:
+            logger.error("kill_motors: %s", e)
+            return False
 
     def set_param(self, name, value):
         """Establecer un parámetro y esperar su confirmación"""

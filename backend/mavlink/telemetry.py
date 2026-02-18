@@ -234,6 +234,13 @@ class DroneTelemetry:
     def get_attitude(self):
         """Orientación"""
         return self.data['attitude']
+
+    def get_velocity(self):
+        """Velocidad (ground_speed, vertical_speed)"""
+        return {
+            "ground_speed": self.data.get("speed", 0.0),
+            "vertical_speed": self.data.get("climb_rate", 0.0),
+        }
     
     def get_position(self):
         """Posición completa"""

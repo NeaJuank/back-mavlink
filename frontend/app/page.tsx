@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { API_URL, WS_URL } from './config';
 
 export default function Home() {
   const [telemetry, setTelemetry] = useState<any>({});
@@ -10,8 +11,8 @@ export default function Home() {
   const [routes, setRoutes] = useState<any[]>([]);
 
   useEffect(() => {
-    // WebSocket para telemetría
-    const ws = new WebSocket('ws://localhost:8000/ws/telemetry');
+    // WebSocket para telemetría (backend en Raspberry 192.168.137.43)
+    const ws = new WebSocket(WS_URL);
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       setTelemetry(data);
@@ -20,10 +21,10 @@ export default function Home() {
     ws.onclose = () => console.log('WebSocket closed');
 
     // Fetch para datos estáticos
-    fetch('http://localhost:8000/drones').then(res => res.json()).then(setDrones);
-    fetch('http://localhost:8000/missions').then(res => res.json()).then(setMissions);
-    fetch('http://localhost:8000/users').then(res => res.json()).then(setUsers);
-    fetch('http://localhost:8000/flight-routes').then(res => res.json()).then(setRoutes);
+    fetch(`${API_URL}/drones`).then(res => res.json()).then(setDrones);
+    fetch(`${API_URL}/missions`).then(res => res.json()).then(setMissions);
+    fetch(`${API_URL}/users`).then(res => res.json()).then(setUsers);
+    fetch(`${API_URL}/flight-routes`).then(res => res.json()).then(setRoutes);
 
     return () => ws.close();
   }, []);
