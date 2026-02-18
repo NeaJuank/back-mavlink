@@ -11,10 +11,9 @@ pytest==8.0.0
 # Agregar estas líneas a tu backend/requirements.txt existente
 
 # Intel RealSense SDK
-pyrealsense2==2.54.2
+#pyrealsense2==2.54.2
 
-# OpenCV para procesamiento de video
-opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
 
 # Para manejo de imágenes
 numpy==1.24.3
