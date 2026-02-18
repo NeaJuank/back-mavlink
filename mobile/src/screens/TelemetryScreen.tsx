@@ -13,6 +13,21 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export const TelemetryScreen: React.FC = () => {
   const { telemetry, connected } = useDrone();
+  // Valores por defecto por si el backend envía datos incompletos
+  const alt = Number(telemetry?.altitude ?? 0);
+  const lat = Number(telemetry?.latitude ?? 0);
+  const lon = Number(telemetry?.longitude ?? 0);
+  const sat = Number(telemetry?.satellites ?? 0);
+  const hdop = Number(telemetry?.hdop ?? 0);
+  const roll = Number(telemetry?.roll ?? 0);
+  const pitch = Number(telemetry?.pitch ?? 0);
+  const yaw = Number(telemetry?.yaw ?? 0);
+  const gs = Number(telemetry?.ground_speed ?? 0);
+  const vs = Number(telemetry?.vertical_speed ?? 0);
+  const batV = Number(telemetry?.battery_voltage ?? 0);
+  const batPct = Number(telemetry?.battery_remaining ?? 0);
+  const mode = String(telemetry?.mode ?? 'UNKNOWN');
+  const armed = Boolean(telemetry?.armed);
 
   const renderDataCard = (
     title: string,
@@ -78,15 +93,15 @@ export const TelemetryScreen: React.FC = () => {
             <View style={styles.cardGrid}>
               {renderDataCard(
                 'MODO',
-                telemetry.mode,
+                mode,
                 '',
                 '#00aaff'
               )}
               {renderDataCard(
                 'ESTADO',
-                telemetry.armed ? 'ARMADO' : 'DESARMADO',
+                armed ? 'ARMADO' : 'DESARMADO',
                 '',
-                telemetry.armed ? '#ff0044' : '#888'
+                armed ? '#ff0044' : '#888'
               )}
             </View>
           </View>
@@ -95,16 +110,16 @@ export const TelemetryScreen: React.FC = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>POSICIÓN & NAVEGACIÓN</Text>
             <View style={styles.dataContainer}>
-              {renderDataRow('Altitud', telemetry.altitude.toFixed(2), 'm')}
-              {renderDataRow('Latitud', telemetry.latitude.toFixed(6), '°')}
-              {renderDataRow('Longitud', telemetry.longitude.toFixed(6), '°')}
+              {renderDataRow('Altitud', alt.toFixed(2), 'm')}
+              {renderDataRow('Latitud', lat.toFixed(6), '°')}
+              {renderDataRow('Longitud', lon.toFixed(6), '°')}
               {renderDataRow(
                 'Satélites',
-                telemetry.satellites,
+                sat,
                 '',
-                getSignalColor(telemetry.satellites)
+                getSignalColor(sat)
               )}
-              {renderDataRow('HDOP', telemetry.hdop.toFixed(2), '')}
+              {renderDataRow('HDOP', hdop.toFixed(2), '')}
             </View>
           </View>
 
@@ -112,9 +127,9 @@ export const TelemetryScreen: React.FC = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>ACTITUD</Text>
             <View style={styles.cardGrid}>
-              {renderDataCard('ROLL', telemetry.roll.toFixed(1), '°', '#00aaff')}
-              {renderDataCard('PITCH', telemetry.pitch.toFixed(1), '°', '#00ff88')}
-              {renderDataCard('YAW', telemetry.yaw.toFixed(1), '°', '#ffaa00')}
+              {renderDataCard('ROLL', roll.toFixed(1), '°', '#00aaff')}
+              {renderDataCard('PITCH', pitch.toFixed(1), '°', '#00ff88')}
+              {renderDataCard('YAW', yaw.toFixed(1), '°', '#ffaa00')}
             </View>
           </View>
 
@@ -124,15 +139,15 @@ export const TelemetryScreen: React.FC = () => {
             <View style={styles.cardGrid}>
               {renderDataCard(
                 'HORIZONTAL',
-                telemetry.ground_speed.toFixed(2),
+                gs.toFixed(2),
                 'm/s',
                 '#00ff88'
               )}
               {renderDataCard(
                 'VERTICAL',
-                telemetry.vertical_speed.toFixed(2),
+                vs.toFixed(2),
                 'm/s',
-                telemetry.vertical_speed >= 0 ? '#00ff88' : '#ff0044'
+                vs >= 0 ? '#00ff88' : '#ff0044'
               )}
             </View>
           </View>
@@ -146,8 +161,8 @@ export const TelemetryScreen: React.FC = () => {
                   style={[
                     styles.batteryFill,
                     {
-                      width: `${telemetry.battery_remaining}%`,
-                      backgroundColor: getBatteryColor(telemetry.battery_remaining),
+                      width: `${batPct}%`,
+                      backgroundColor: getBatteryColor(batPct),
                     },
                   ]}
                 />
@@ -155,24 +170,24 @@ export const TelemetryScreen: React.FC = () => {
               <Text
                 style={[
                   styles.batteryPercentage,
-                  { color: getBatteryColor(telemetry.battery_remaining) },
+                  { color: getBatteryColor(batPct) },
                 ]}
               >
-                {telemetry.battery_remaining.toFixed(0)}%
+                {batPct.toFixed(0)}%
               </Text>
             </View>
             <View style={styles.dataContainer}>
               {renderDataRow(
                 'Voltaje',
-                telemetry.battery_voltage.toFixed(2),
+                batV.toFixed(2),
                 'V',
-                getBatteryColor(telemetry.battery_remaining)
+                getBatteryColor(batPct)
               )}
               {renderDataRow(
                 'Restante',
-                telemetry.battery_remaining.toFixed(1),
+                batPct.toFixed(1),
                 '%',
-                getBatteryColor(telemetry.battery_remaining)
+                getBatteryColor(batPct)
               )}
             </View>
           </View>

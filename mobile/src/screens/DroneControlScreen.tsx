@@ -90,11 +90,11 @@ export const DroneControlScreen: React.FC = () => {
             </View>
 
             <View style={styles.modeBadge}>
-              <Text style={styles.modeText}>{telemetry.mode}</Text>
+              <Text style={styles.modeText}>{telemetry?.mode ?? 'UNKNOWN'}</Text>
             </View>
 
-            <View style={[styles.armedBadge, { backgroundColor: telemetry.armed ? '#ff0044' : '#444' }]}>
-              <Text style={styles.armedText}>{telemetry.armed ? 'ARMADO' : 'DESARMADO'}</Text>
+            <View style={[styles.armedBadge, { backgroundColor: telemetry?.armed ? '#ff0044' : '#444' }]}>
+              <Text style={styles.armedText}>{telemetry?.armed ? 'ARMADO' : 'DESARMADO'}</Text>
             </View>
           </View>
 
@@ -102,12 +102,12 @@ export const DroneControlScreen: React.FC = () => {
           <View style={styles.telemetryHUD}>
             <View style={styles.hudItem}>
               <Text style={styles.hudLabel}>ALT</Text>
-              <Text style={styles.hudValue}>{telemetry.altitude.toFixed(1)}m</Text>
+              <Text style={styles.hudValue}>{(Number(telemetry?.altitude ?? 0)).toFixed(1)}m</Text>
             </View>
 
             <View style={styles.hudItem}>
               <Text style={styles.hudLabel}>SPD</Text>
-              <Text style={styles.hudValue}>{telemetry.ground_speed.toFixed(1)}m/s</Text>
+              <Text style={styles.hudValue}>{(Number(telemetry?.ground_speed ?? 0)).toFixed(1)}m/s</Text>
             </View>
 
             <View style={styles.hudItem}>
@@ -115,16 +115,16 @@ export const DroneControlScreen: React.FC = () => {
               <Text
                 style={[
                   styles.hudValue,
-                  { color: telemetry.battery_remaining > 30 ? '#00ff88' : '#ff0044' },
+                  { color: (Number(telemetry?.battery_remaining ?? 0)) > 30 ? '#00ff88' : '#ff0044' },
                 ]}
               >
-                {telemetry.battery_remaining.toFixed(0)}%
+                {(Number(telemetry?.battery_remaining ?? 0)).toFixed(0)}%
               </Text>
             </View>
 
             <View style={styles.hudItem}>
               <Text style={styles.hudLabel}>SAT</Text>
-              <Text style={styles.hudValue}>{telemetry.satellites}</Text>
+              <Text style={styles.hudValue}>{Number(telemetry?.satellites ?? 0)}</Text>
             </View>
           </View>
 
@@ -141,7 +141,7 @@ export const DroneControlScreen: React.FC = () => {
       <View style={styles.controlsContainer}>
         {/* Botones */}
         <View style={styles.buttonRow}>
-          {!telemetry.armed ? (
+          {!telemetry?.armed ? (
             <TouchableOpacity style={[styles.controlButton, styles.armButton]} onPress={armDrone}>
               <Text style={styles.buttonText}>ARMAR</Text>
             </TouchableOpacity>
