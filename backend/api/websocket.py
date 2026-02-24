@@ -211,43 +211,56 @@ async def websocket_endpoint(websocket: WebSocket):
     Endpoint WebSocket principal
     - Envía telemetría cada 100ms (via telemetry_broadcaster)
     - Recibe comandos de control y responde con ACK
-    
+
     Usa un asyncio.Lock por conexión para evitar escrituras concurrentes
     entre el broadcaster de telemetría y los ACKs de comandos.
     """
+    client_host = websocket.client.host if websocket.client else "unknown"
+    client_port = websocket.client.port if websocket.client else 0
+    client_id = f"{client_host}:{client_port}"
+
+    logger.info(f"[WS] Nueva conexión entrante desde {client_id}")
     await manager.connect(websocket)
 
     # Obtener el controlador MAVLink desde rest
     from backend.api import rest
     mav_controller = rest.mav
 
+    if not mav_controller:
+        logger.warning(f"[WS] {client_id} — MAVLink no disponible, la telemetría estará vacía")
+
     try:
         while True:
             # Esperar mensaje del cliente (comandos)
             data = await websocket.receive_text()
+            logger.debug(f"[WS] {client_id} → recibido: {data[:200]}")
 
             try:
                 message = json.loads(data)
             except json.JSONDecodeError as e:
-                logger.warning(f"JSON inválido recibido: {e}")
+                logger.warning(f"[WS] {client_id} — JSON inválido: {e} | raw: {data[:100]}")
                 continue
+
+            cmd_type = message.get("type", "<sin tipo>")
+            logger.info(f"[WS] {client_id} → comando: {cmd_type}")
 
             # Procesar comando
             result = await process_command(message, mav_controller)
+            logger.info(f"[WS] {client_id} ← ACK {cmd_type}: {result}")
 
             # Enviar ACK al cliente usando el lock compartido con el broadcaster
             await manager.send(websocket, {
                 "type": "command_ack",
-                "command": message.get("type"),
+                "command": cmd_type,
                 "result": result,
                 "timestamp": datetime.utcnow().isoformat()
             })
 
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as e:
         manager.disconnect(websocket)
-        logger.info("Cliente desconectado normalmente")
+        logger.info(f"[WS] {client_id} desconectado normalmente (code={e.code})")
     except Exception as e:
-        logger.error(f"Error en WebSocket: {e}")
+        logger.error(f"[WS] {client_id} ERROR inesperado: {type(e).__name__}: {e}", exc_info=True)
         manager.disconnect(websocket)
 
 def start_telemetry_broadcast(mav_controller):

@@ -65,10 +65,11 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const connectWebSocket = useCallback(() => {
     try {
+      console.log(`[WS] Conectando a ${WS_URL} ...`);
       ws.current = new WebSocket(WS_URL);
 
       ws.current.onopen = () => {
-        console.log('✅ WebSocket conectado');
+        console.log('[WS] ✅ Conexión establecida');
         setConnected(true);
       };
 
@@ -79,30 +80,42 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (message.type === 'telemetry') {
             setTelemetry(message.data);
           } else if (message.type === 'command_ack') {
-            console.log('Comando ACK:', message.command, message.result);
+            console.log('[WS] ACK recibido:', message.command, '→', JSON.stringify(message.result));
+          } else {
+            console.log('[WS] Mensaje desconocido:', message.type);
           }
         } catch (error) {
-          console.error('Error parseando mensaje WebSocket:', error);
+          console.error('[WS] Error parseando mensaje:', error, '| raw:', event.data?.slice?.(0, 100));
         }
       };
 
       ws.current.onerror = (error) => {
-        console.error('❌ Error WebSocket:', error);
+        // En React Native el evento de error no incluye detalles, pero lo registramos
+        console.error('[WS] ❌ Error de WebSocket (ver logs del backend para detalles):', error);
         setConnected(false);
       };
 
-      ws.current.onclose = () => {
-        console.log('⚠️ WebSocket desconectado');
+      ws.current.onclose = (event) => {
+        console.warn(
+          `[WS] ⚠️ Conexión cerrada — code=${event.code} reason='${event.reason}'`
+        );
+        /*
+         * Códigos de cierre comunes:
+         *   1000 = cierre normal
+         *   1001 = el servidor se fue (going away)
+         *   1006 = cierre anormal (sin frame de cierre — error de red o excepción en el servidor)
+         *   1011 = error interno del servidor
+         */
         setConnected(false);
 
         // Reconectar después de 3 segundos
         reconnectTimeout.current = setTimeout(() => {
-          console.log('🔄 Intentando reconectar...');
+          console.log('[WS] 🔄 Intentando reconectar...');
           connectWebSocket();
         }, 3000);
       };
     } catch (error) {
-      console.error('Error creando WebSocket:', error);
+      console.error('[WS] Error creando WebSocket:', error);
     }
   }, []);
 
@@ -121,15 +134,19 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const sendCommand = async (type: string, params: any = {}) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-      console.error('WebSocket no conectado');
+      const stateMap: Record<number, string> = {
+        [WebSocket.CONNECTING]: 'CONNECTING',
+        [WebSocket.OPEN]: 'OPEN',
+        [WebSocket.CLOSING]: 'CLOSING',
+        [WebSocket.CLOSED]: 'CLOSED',
+      };
+      const state = ws.current ? stateMap[ws.current.readyState] ?? ws.current.readyState : 'null';
+      console.error(`[WS] No se puede enviar '${type}' — estado actual: ${state}`);
       return;
     }
 
-    const command = {
-      type,
-      params,
-    };
-
+    const command = { type, params };
+    console.log(`[WS] Enviando comando: ${type}`, params);
     ws.current.send(JSON.stringify(command));
   };
 
