@@ -3,7 +3,7 @@ WebSocket API para comunicación en tiempo real con clientes (Mobile/Frontend)
 Envía telemetría y recibe comandos de control
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from typing import Dict, List, Set
+from typing import Set
 import asyncio
 import json
 import logging
@@ -17,29 +17,46 @@ router = APIRouter()
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
+        # Per-connection write locks to prevent concurrent sends
+        self._locks: dict = {}
         self.telemetry_task = None
-        
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.add(websocket)
+        self._locks[id(websocket)] = asyncio.Lock()
         logger.info(f"Cliente conectado. Total conexiones: {len(self.active_connections)}")
-        
+
     def disconnect(self, websocket: WebSocket):
         self.active_connections.discard(websocket)
+        self._locks.pop(id(websocket), None)
         logger.info(f"Cliente desconectado. Total conexiones: {len(self.active_connections)}")
-        
+
+    async def send(self, websocket: WebSocket, message: dict):
+        """Envía un mensaje a un cliente específico con lock para evitar escrituras concurrentes."""
+        lock = self._locks.get(id(websocket))
+        if lock is None:
+            return
+        async with lock:
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.error(f"Error enviando a cliente: {e}")
+                raise
+
     async def broadcast(self, message: dict):
         """Envía mensaje a todos los clientes conectados"""
         disconnected = set()
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
-                await connection.send_json(message)
+                await self.send(connection, message)
             except Exception as e:
-                logger.error(f"Error enviando a cliente: {e}")
+                logger.error(f"Error en broadcast a cliente: {e}")
                 disconnected.add(connection)
-        
+
         # Limpiar conexiones muertas
-        self.active_connections -= disconnected
+        for conn in disconnected:
+            self.disconnect(conn)
 
 manager = ConnectionManager()
 
@@ -49,23 +66,23 @@ async def telemetry_broadcaster(mav_controller):
     a todos los clientes WebSocket conectados
     """
     logger.info("Iniciando broadcaster de telemetría...")
-    
+
     while True:
         try:
             if len(manager.active_connections) > 0:
                 # Obtener telemetría del controlador MAVLink
                 telemetry = await get_telemetry_data(mav_controller)
-                
+
                 # Broadcast a todos los clientes
                 await manager.broadcast({
                     "type": "telemetry",
                     "data": telemetry,
                     "timestamp": datetime.utcnow().isoformat()
                 })
-            
+
             # Frecuencia de actualización: 10Hz
             await asyncio.sleep(0.1)
-            
+
         except Exception as e:
             logger.error(f"Error en telemetry_broadcaster: {e}")
             await asyncio.sleep(1)
@@ -80,7 +97,7 @@ async def get_telemetry_data(mav_controller) -> dict:
         gps = mav_controller.telemetry.get_gps()
         battery = mav_controller.telemetry.get_battery()
         velocity = mav_controller.telemetry.get_velocity()
-        
+
         return {
             "armed": mav_controller.is_armed(),
             "mode": mav_controller.get_mode(),
@@ -108,9 +125,9 @@ async def process_command(command: dict, mav_controller):
     """
     cmd_type = command.get("type")
     params = command.get("params", {})
-    
+
     logger.info(f"Procesando comando: {cmd_type} con params: {params}")
-    
+
     if not mav_controller:
         return {"success": False, "message": "MAVLink no conectado"}
 
@@ -118,29 +135,29 @@ async def process_command(command: dict, mav_controller):
         if cmd_type == "ARM":
             success = await asyncio.to_thread(mav_controller.arm)
             return {"success": success, "message": "Drone armado" if success else "Error armando"}
-            
+
         elif cmd_type == "DISARM":
             success = await asyncio.to_thread(mav_controller.disarm)
             return {"success": success, "message": "Drone desarmado" if success else "Error desarmando"}
-            
+
         elif cmd_type == "TAKEOFF":
             altitude = params.get("altitude", 10)
             success = await asyncio.to_thread(mav_controller.takeoff, altitude)
             return {"success": success, "message": f"Despegando a {altitude}m" if success else "Error despegando"}
-            
+
         elif cmd_type == "LAND":
             success = await asyncio.to_thread(mav_controller.land)
             return {"success": success, "message": "Aterrizando" if success else "Error aterrizando"}
-            
+
         elif cmd_type == "RTL":
             success = await asyncio.to_thread(mav_controller.return_to_launch)
             return {"success": success, "message": "Regresando a home" if success else "Error en RTL"}
-            
+
         elif cmd_type == "SET_MODE":
             mode = params.get("mode", "STABILIZE")
             success = await asyncio.to_thread(mav_controller.set_mode, mode)
             return {"success": success, "message": f"Modo cambiado a {mode}" if success else "Error cambiando modo"}
-            
+
         elif cmd_type == "RC_CONTROL":
             # Joystick: throttle, yaw, pitch, roll (la app móvil envía este comando)
             throttle = params.get("throttle")
@@ -158,32 +175,32 @@ async def process_command(command: dict, mav_controller):
             value = params.get("value", 0)
             mav_controller.rc.set_throttle(value)
             return {"success": True, "message": f"Throttle: {value}"}
-            
+
         elif cmd_type == "YAW":
             value = params.get("value", 0)
             mav_controller.rc.set_yaw(value)
             return {"success": True, "message": f"Yaw: {value}"}
-            
+
         elif cmd_type == "PITCH":
             value = params.get("value", 0)
             mav_controller.rc.set_pitch(value)
             return {"success": True, "message": f"Pitch: {value}"}
-            
+
         elif cmd_type == "ROLL":
             value = params.get("value", 0)
             mav_controller.rc.set_roll(value)
             return {"success": True, "message": f"Roll: {value}"}
-            
+
         elif cmd_type == "GOTO":
             lat = params.get("latitude")
             lon = params.get("longitude")
             alt = params.get("altitude", 10)
             success = await asyncio.to_thread(mav_controller.goto, lat, lon, alt)
             return {"success": success, "message": f"Navegando a ({lat}, {lon})" if success else "Error navegando"}
-            
+
         else:
             return {"success": False, "message": f"Comando desconocido: {cmd_type}"}
-            
+
     except Exception as e:
         logger.error(f"Error procesando comando {cmd_type}: {e}")
         return {"success": False, "message": f"Error: {str(e)}"}
@@ -192,35 +209,43 @@ async def process_command(command: dict, mav_controller):
 async def websocket_endpoint(websocket: WebSocket):
     """
     Endpoint WebSocket principal
-    - Envía telemetría cada 100ms
-    - Recibe comandos de control
+    - Envía telemetría cada 100ms (via telemetry_broadcaster)
+    - Recibe comandos de control y responde con ACK
+    
+    Usa un asyncio.Lock por conexión para evitar escrituras concurrentes
+    entre el broadcaster de telemetría y los ACKs de comandos.
     """
     await manager.connect(websocket)
-    
+
     # Obtener el controlador MAVLink desde rest
     from backend.api import rest
     mav_controller = rest.mav
 
     try:
         while True:
-            # Esperar mensaje del cliente
+            # Esperar mensaje del cliente (comandos)
             data = await websocket.receive_text()
-            message = json.loads(data)
-            
+
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON inválido recibido: {e}")
+                continue
+
             # Procesar comando
             result = await process_command(message, mav_controller)
-            
-            # Enviar ACK al cliente
-            await websocket.send_json({
+
+            # Enviar ACK al cliente usando el lock compartido con el broadcaster
+            await manager.send(websocket, {
                 "type": "command_ack",
                 "command": message.get("type"),
                 "result": result,
                 "timestamp": datetime.utcnow().isoformat()
             })
-            
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        logger.info("Cliente desconectado")
+        logger.info("Cliente desconectado normalmente")
     except Exception as e:
         logger.error(f"Error en WebSocket: {e}")
         manager.disconnect(websocket)

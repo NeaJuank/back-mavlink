@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { API_URL, WS_URL } from '../config';
 
@@ -61,22 +61,9 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const [connected, setConnected] = useState(false);
   const ws = useRef<WebSocket | null>(null);
-  const reconnectTimeout = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    connectWebSocket();
-
-    return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
-      if (reconnectTimeout.current) {
-        clearTimeout(reconnectTimeout.current);
-      }
-    };
-  }, []);
-
-  const connectWebSocket = () => {
+  const connectWebSocket = useCallback(() => {
     try {
       ws.current = new WebSocket(WS_URL);
 
@@ -117,7 +104,20 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch (error) {
       console.error('Error creando WebSocket:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    connectWebSocket();
+
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+      }
+      if (reconnectTimeout.current) {
+        clearTimeout(reconnectTimeout.current);
+      }
+    };
+  }, [connectWebSocket]);
 
   const sendCommand = async (type: string, params: any = {}) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {

@@ -1,4 +1,10 @@
-﻿services:
+﻿# ============================================================
+# Mapa de puertos (sin solapamientos):
+#   postgres  5432:5432  → base de datos
+#   backend   8000:8000  → REST API + WebSocket (/ws/telemetry)
+#   frontend  4545:3000  → Next.js (interno 3000, externo 4545)
+# ============================================================
+services:
   postgres:
     image: postgres:15
     platform: linux/arm64/v8  # Para Raspberry Pi ARM64
@@ -19,13 +25,15 @@
       dockerfile: backend/Dockerfile
     platform: linux/arm64/v8
     ports:
-      - "8000:8000"
+      - "8000:8000"   # REST API + WebSocket ws://<PI_IP>:8000/ws/telemetry
     depends_on:
       - postgres
     environment:
       - DB_URL=postgresql://dronix_user:DronixSecure2024!@postgres:5432/drones
       - MAVLINK_DEVICE=/dev/ttyACM0
       - MAVLINK_BAUD=57600
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
     volumes:
       - /dev:/dev  # Para acceder a dispositivos USB como ttyACM0
     privileged: true  # Necesario para acceso a hardware
@@ -36,9 +44,9 @@
     build: ./frontend
     platform: linux/arm64/v8
     ports:
-      - "4545:3000"
+      - "4545:3000"   # Next.js: acceder en http://<PI_IP>:4545
     environment:
-      - NEXT_PUBLIC_BACKEND=http://backend:8000
+      - NEXT_PUBLIC_BACKEND_URL=http://backend:8000
     depends_on:
       - backend
     networks:
