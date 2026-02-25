@@ -94,7 +94,10 @@ async def get_telemetry_data(mav_controller) -> dict:
     try:
         telemetry = getattr(mav_controller, "telemetry", None)
         if telemetry is None:
-            logger.error("Telemetría no disponible")
+            # Solo mostrar el error una vez por proceso
+            if not hasattr(get_telemetry_data, "telemetry_error_shown"):
+                logger.error("Telemetría no disponible")
+                get_telemetry_data.telemetry_error_shown = True
             return {"error": "Telemetría no disponible"}
 
         attitude = telemetry.get_attitude()
