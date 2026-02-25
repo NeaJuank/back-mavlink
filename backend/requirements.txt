@@ -1,5 +1,5 @@
 fastapi==0.104.1
-uvicorn==0.24.0
+uvicorn[standard]==0.24.0
 pymavlink==2.4.41
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
@@ -7,6 +7,7 @@ pyserial==3.5
 python-dotenv==1.0.0
 pydantic==2.5.0
 pytest==8.0.0
+websockets==11.0.3
 # Dependencias adicionales para streaming de cámara Intel RealSense D435i
 # Agregar estas líneas a tu backend/requirements.txt existente
 
