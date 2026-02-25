@@ -152,7 +152,7 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const armDrone = async () => {
     try {
-      const response = await axios.post(`${API_URL}/api/arm`);
+      const response = await axios.post(`${API_URL}/api/arm`, { force: false });
       console.log('Armar:', response.data);
     } catch (error) {
       console.error('Error armando:', error);
