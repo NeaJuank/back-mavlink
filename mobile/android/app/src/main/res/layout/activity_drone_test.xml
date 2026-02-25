@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#0a0a0f">
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Status: Desconectado"
+        android:textColor="#ff0044"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/telemetryText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Telemetría:\nEsperando datos..."
+        android:textColor="#00ff88"
+        android:fontFamily="monospace" />
+
+    <Button
+        android:id="@+id/btnArm"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="ARMAR DRON"
+        android:backgroundTint="#00ff88"
+        android:textColor="#000" />
+
+    <Button
+        android:id="@+id/btnTakeoff"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="DESPEGAR (10m)"
+        android:backgroundTint="#00aaff" />
+
+    <Button
+        android:id="@+id/btnLand"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="ATERRIZAR"
+        android:backgroundTint="#ffaa00" />
+
+    <Button
+        android:id="@+id/btnEmergency"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="EMERGENCIA (RTL)"
+        android:backgroundTint="#ff0044" />
+
+</LinearLayout>
