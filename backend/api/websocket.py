@@ -92,11 +92,15 @@ async def get_telemetry_data(mav_controller) -> dict:
     Extrae telemetría del controlador MAVLink
     """
     try:
-        # Obtener datos de los diferentes módulos de telemetría
-        attitude = mav_controller.telemetry.get_attitude()
-        gps = mav_controller.telemetry.get_gps()
-        battery = mav_controller.telemetry.get_battery()
-        velocity = mav_controller.telemetry.get_velocity()
+        telemetry = getattr(mav_controller, "telemetry", None)
+        if telemetry is None:
+            logger.error("Telemetría no disponible")
+            return {"error": "Telemetría no disponible"}
+
+        attitude = telemetry.get_attitude()
+        gps = telemetry.get_gps()
+        battery = telemetry.get_battery()
+        velocity = telemetry.get_velocity()
 
         return {
             "armed": mav_controller.is_armed(),
@@ -117,7 +121,7 @@ async def get_telemetry_data(mav_controller) -> dict:
         }
     except Exception as e:
         logger.error(f"Error obteniendo telemetría: {e}")
-        return {}
+        return {"error": f"Error obteniendo telemetría: {e}"}
 
 async def process_command(command: dict, mav_controller):
     """
