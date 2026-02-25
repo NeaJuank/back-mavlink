@@ -92,8 +92,28 @@ async def get_telemetry_data(mav_controller) -> dict:
     Extrae telemetría del controlador MAVLink
     """
     try:
+        # Soporte para simulador: si telemetry es None, usar métodos simulados
         telemetry = getattr(mav_controller, "telemetry", None)
-        if telemetry is None:
+        if telemetry is None and hasattr(mav_controller, "get_telemetry"):
+            sim_data = mav_controller.get_telemetry()
+            return {
+                "armed": mav_controller.is_armed(),
+                "mode": mav_controller.get_mode(),
+                "altitude": sim_data.get("altitude", 0),
+                "latitude": sim_data.get("gps", {}).get("lat", 0),
+                "longitude": sim_data.get("gps", {}).get("lon", 0),
+                "roll": sim_data.get("attitude", {}).get("roll", 0),
+                "pitch": sim_data.get("attitude", {}).get("pitch", 0),
+                "yaw": sim_data.get("attitude", {}).get("yaw", 0),
+                "battery_voltage": sim_data.get("battery", {}).get("voltage", 0),
+                "battery_current": sim_data.get("battery", {}).get("current", 0),
+                "battery_remaining": sim_data.get("battery", {}).get("remaining", 0),
+                "ground_speed": sim_data.get("speed", 0),
+                "vertical_speed": sim_data.get("climb_rate", 0),
+                "satellites": sim_data.get("gps", {}).get("satellites", 0),
+                "hdop": sim_data.get("gps", {}).get("hdop", 0),
+            }
+        elif telemetry is None:
             # Solo mostrar el error una vez por proceso
             if not hasattr(get_telemetry_data, "telemetry_error_shown"):
                 logger.error("Telemetría no disponible")
