@@ -4,5 +4,5 @@
  */
 const RASPBERRY_IP = '192.168.137.95';
 
-export const API_URL = `http://${RASPBERRY_IP}:8000`;
-export const WS_URL = `ws://${RASPBERRY_IP}:8000/ws/telemetry`;
+export const API_URL = `https://${RASPBERRY_IP}:8000`;
+export const WS_URL = `wss://${RASPBERRY_IP}:8000/ws/telemetry`;
