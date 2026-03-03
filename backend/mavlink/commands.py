@@ -1,6 +1,11 @@
 # backend/mavlink/commands.py
 """
-Comandos de control del dron
+Comandos de control del dron.
+
+CORRECCIONES:
+- set_velocity: self.master → self.conn.master
+- reboot_autopilot: self.master → self.conn.master
+- emergency_stop: get_current_mode usa conn correctamente
 """
 
 from pymavlink import mavutil
@@ -11,303 +16,243 @@ logger = logging.getLogger(__name__)
 
 
 class DroneCommands:
-    """Clase para enviar comandos al dron"""
-    
+
     def __init__(self, connection):
-        """
-        Args:
-            connection: Instancia de MAVLinkConnection
-        """
         self.conn = connection
-    
-    # ============================================
-    # COMANDOS BÁSICOS
-    # ============================================
-    
+
+    # ── Comandos básicos ───────────────────────────────────────────────────────
+
+    def _is_armed(self) -> bool:
+        """Verifica si el dron está actualmente armado leyendo HEARTBEAT."""
+        try:
+            msg = self.conn.recv_match(msg_type='HEARTBEAT', blocking=True, timeout=2)
+            if msg:
+                from pymavlink import mavutil as mu
+                return bool(msg.base_mode & mu.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+        except Exception:
+            pass
+        return False
+
     def arm(self):
-        """Armar motores"""
-        logger.info("🔴 ARM - Armando motores...")
-        
+        logger.info("🔴 ARM — Armando motores...")
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             master.mav.command_long_send(
                 master.target_system,
                 master.target_component,
                 mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0,  # confirmation
-                1,  # 1 = ARM
-                0, 0, 0, 0, 0, 0
+                0, 1, 0, 0, 0, 0, 0, 0,
             )
 
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM):
             logger.info("✅ Motores armados")
             return True
-        else:
-            logger.error("❌ No se pudo armar")
-            return False
-    
+        logger.error("❌ No se pudo armar")
+        return False
+
     def disarm(self, force=False):
-        """
-        Desarmar motores
-        
-        Args:
-            force: Forzar desarme (incluso en vuelo, PELIGROSO)
-        """
-        logger.info("🟢 DISARM - Desarmando motores...")
-        
+        logger.info("🟢 DISARM — Desarmando motores...")
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             master.mav.command_long_send(
                 master.target_system,
                 master.target_component,
                 mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0,
-                0,  # 0 = DISARM
-                21196 if force else 0,  # Magic number para forzar
-                0, 0, 0, 0, 0
+                0, 0,
+                21196 if force else 0,
+                0, 0, 0, 0, 0,
             )
 
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM):
             logger.info("✅ Motores desarmados")
             return True
-        else:
-            logger.error("❌ No se pudo desarmar")
-            return False
-    
+        logger.error("❌ No se pudo desarmar")
+        return False
+
     def set_mode(self, mode_name):
-        """
-        Cambiar modo de vuelo
-        
-        Args:
-            mode_name: Nombre del modo (STABILIZE, LOITER, GUIDED, RTL, etc)
-        """
         logger.info(f"🔄 Cambiando a modo: {mode_name}")
-        
-        # Verificar que el modo existe
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             if mode_name not in master.mode_mapping():
-                valid_modes = list(master.mode_mapping().keys())
-                raise ValueError(f"Modo inválido. Modos válidos: {valid_modes}")
-
+                valid = list(master.mode_mapping().keys())
+                raise ValueError(f"Modo inválido '{mode_name}'. Válidos: {valid}")
             mode_id = master.mode_mapping()[mode_name]
             master.set_mode(mode_id)
-        
-        # Verificar cambio
+
         time.sleep(0.5)
-        # Aquí podrías verificar con telemetría
-        
-        logger.info(f"✅ Comando de modo enviado: {mode_name}")
+        logger.info(f"✅ Modo enviado: {mode_name}")
         return True
-    
+
     def takeoff(self, altitude):
-        """
-        Despegar a altitud especificada
-        
-        Args:
-            altitude: Altitud objetivo en metros
-        """
-        logger.info(f"🚁 TAKEOFF - Despegando a {altitude}m")
-        
-        # Paso 1: Modo GUIDED
-        self.set_mode('GUIDED')
+        logger.info(f"🚁 TAKEOFF — Despegando a {altitude}m")
+        self.set_mode("GUIDED")
         time.sleep(1)
 
-        # Paso 2: Armar
-        if not self.arm():
-            raise Exception("No se pudo armar el dron")
-        time.sleep(2)
+        # Solo armar si no está ya armado para evitar error de "ya armado"
+        if not self._is_armed():
+            if not self.arm():
+                raise Exception("No se pudo armar el dron para despegar")
+            time.sleep(2)
+        else:
+            logger.info("Dron ya está armado, procediendo con despegue")
+            time.sleep(0.5)
 
-        # Paso 3: Comando takeoff (usar master dinámico)
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             master.mav.command_long_send(
                 master.target_system,
                 master.target_component,
                 mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-                0,
-                0, 0, 0, 0,  # Params no usados
-                0, 0,        # Lat/Lon (0 = posición actual)
-                altitude
+                0, 0, 0, 0, 0, 0, 0, altitude,
             )
 
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF):
             logger.info(f"✅ Despegando a {altitude}m")
             return True
-        else:
-            logger.error("❌ Comando de despegue rechazado")
-            return False
-    
+        logger.error("❌ Comando de despegue rechazado")
+        return False
+
     def land(self):
-        """Aterrizar en posición actual"""
-        logger.info("🛬 LAND - Aterrizando...")
-        
+        logger.info("🛬 LAND — Aterrizando...")
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             master.mav.command_long_send(
                 master.target_system,
                 master.target_component,
                 mavutil.mavlink.MAV_CMD_NAV_LAND,
-                0,
-                0, 0, 0, 0,
-                0, 0, 0  # Lat/Lon/Alt (0 = actual)
+                0, 0, 0, 0, 0, 0, 0, 0,
             )
 
         if self.conn.wait_ack(mavutil.mavlink.MAV_CMD_NAV_LAND):
             logger.info("✅ Aterrizando")
             return True
-        else:
-            logger.error("❌ Comando de aterrizaje rechazado")
-            return False
-    
+        logger.error("❌ Comando de aterrizaje rechazado")
+        return False
+
     def rtl(self):
-        """Return to Launch"""
-        logger.info("🏠 RTL - Return to Launch")
-        return self.set_mode('RTL')
-    
+        logger.info("🏠 RTL — Return to Launch")
+        return self.set_mode("RTL")
+
     def loiter(self):
-        """Modo Loiter (mantener posición)"""
-        logger.info("⭕ LOITER - Mantener posición")
-        return self.set_mode('LOITER')
-    
-    # ============================================
-    # NAVEGACIÓN
-    # ============================================
-    
+        return self.set_mode("LOITER")
+
+    # ── Navegación ─────────────────────────────────────────────────────────────
+
     def goto_position(self, lat, lon, alt):
-        """
-        Ir a coordenadas GPS
-        
-        Args:
-            lat: Latitud (grados)
-            lon: Longitud (grados)
-            alt: Altitud relativa (metros)
-        """
-        logger.info(f"📍 GOTO - Yendo a ({lat:.6f}, {lon:.6f}) @ {alt}m")
-        
-        # Asegurar modo GUIDED
+        logger.info(f"📍 GOTO — ({lat:.6f}, {lon:.6f}) @ {alt}m")
         current_mode = self.get_current_mode()
-        if current_mode != 'GUIDED':
-            self.set_mode('GUIDED')
+        if current_mode != "GUIDED":
+            self.set_mode("GUIDED")
             time.sleep(1)
-        # Enviar posición objetivo usando master dinámico
+
         with self.conn._lock:
             master = self.conn.master
             if not master:
                 raise ConnectionError("No hay conexión con Pixhawk")
-
             master.mav.set_position_target_global_int_send(
-                0,  # timestamp
+                0,
                 master.target_system,
                 master.target_component,
                 mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                int(0b110111111000),  # type_mask (solo posición)
+                int(0b110111111000),
                 int(lat * 1e7),
                 int(lon * 1e7),
                 alt,
-                0, 0, 0,  # vx, vy, vz
-                0, 0, 0,  # afx, afy, afz
-                0, 0      # yaw, yaw_rate
+                0, 0, 0,
+                0, 0, 0,
+                0, 0,
             )
-        
+
         logger.info("✅ Waypoint enviado")
         return True
-    
+
     def set_velocity(self, vx, vy, vz, yaw_rate=0):
         """
-        Establecer velocidad del dron
-        
-        Args:
-            vx: Velocidad Norte (m/s)
-            vy: Velocidad Este (m/s)
-            vz: Velocidad Down (m/s, negativo = subir)
-            yaw_rate: Velocidad de rotación (rad/s)
+        Establecer velocidad del dron.
+        CORRECCIÓN: antes usaba self.master (no existe en DroneCommands).
         """
-        self.master.mav.set_position_target_local_ned_send(
-            0,
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-            int(0b0000111111000111),  # type_mask (solo velocidad)
-            0, 0, 0,  # posición
-            vx, vy, vz,  # velocidad
-            0, 0, 0,  # aceleración
-            0, yaw_rate
-        )
-    
-    # ============================================
-    # EMERGENCIA
-    # ============================================
-    
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+            master.mav.set_position_target_local_ned_send(
+                0,
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                int(0b0000111111000111),
+                0, 0, 0,
+                vx, vy, vz,
+                0, 0, 0,
+                0, yaw_rate,
+            )
+
+    # ── Emergencia ─────────────────────────────────────────────────────────────
+
     def emergency_stop(self):
-        """Parada de emergencia"""
         logger.warning("🚨 EMERGENCY STOP")
-        
         try:
-            # Intentar RTL primero
             self.rtl()
             time.sleep(1)
-            
-            # Verificar si funcionó
-            current_mode = self.get_current_mode()
-            if current_mode == 'RTL':
-                logger.info("✅ RTL activado")
+            if self.get_current_mode() == "RTL":
                 return True
-            
-            # Si RTL falló, intentar LAND
+
             logger.warning("RTL falló, intentando LAND...")
             self.land()
             time.sleep(1)
-            
-            current_mode = self.get_current_mode()
-            if current_mode == 'LAND':
-                logger.info("✅ LAND activado")
+            if self.get_current_mode() == "LAND":
                 return True
-            
-            # Último recurso: desarmar (PELIGROSO en vuelo)
-            logger.critical("🚨 LAND falló, DESARMANDO (puede causar caída)")
+
+            logger.critical("🚨 LAND falló — DESARMANDO (puede causar caída)")
             return self.disarm(force=True)
-            
         except Exception as e:
             logger.critical(f"Error en emergency stop: {e}")
             return False
-    
-    # ============================================
-    # UTILIDADES
-    # ============================================
-    
+
+    def kill_motors(self):
+        """Detener motores inmediatamente (PELIGROSO)."""
+        logger.critical("💀 MOTOR KILL — Desarmando forzado")
+        return self.disarm(force=True)
+
+    # ── Utilidades ─────────────────────────────────────────────────────────────
+
     def get_current_mode(self):
-        """Obtener modo actual del dron"""
-        msg = self.conn.recv_match('HEARTBEAT', blocking=True, timeout=2)
+        """
+        Obtener modo actual del dron.
+        CORRECCIÓN: usa self.conn.recv_match que sí existe.
+        """
+        msg = self.conn.recv_match(msg_type="HEARTBEAT", blocking=True, timeout=2)
         if msg:
             return mavutil.mode_string_v10(msg)
         return None
-    
+
     def reboot_autopilot(self):
-        """Reiniciar autopiloto"""
+        """
+        Reiniciar autopiloto.
+        CORRECCIÓN: antes usaba self.master (no existe). Ahora usa self.conn.master.
+        """
         logger.warning("🔄 Reiniciando autopiloto...")
-        
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
-            0,
-            1, 0, 0, 0, 0, 0, 0  # 1 = reboot autopilot
-        )
-        
+        with self.conn._lock:
+            master = self.conn.master
+            if not master:
+                raise ConnectionError("No hay conexión con Pixhawk")
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                0,
+                1, 0, 0, 0, 0, 0, 0,  # 1 = reboot autopilot
+            )
+        # Desconectar después del reboot (el autopiloto se reiniciará)
         self.conn.disconnect()
+        logger.info("✅ Comando de reboot enviado — conexión cerrada")

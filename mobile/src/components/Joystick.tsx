@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { View, PanResponder, StyleSheet, Dimensions } from 'react-native';
+import React, { useRef } from 'react';
+import { View, PanResponder, StyleSheet, Dimensions, Animated } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -16,52 +16,68 @@ export const Joystick: React.FC<JoystickProps> = ({
   mode = 'both',
   color = '#00ff88',
 }) => {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
   const centerRadius = size / 2;
-  const stickRadius = size / 4;
+  const stickRadius  = size / 4;
+  const maxDistance  = centerRadius - stickRadius;
+
+  // ── Animated.ValueXY corre en el UI thread — sin pasar por el bridge JS ──
+  const animPos = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+
+  // Guardamos los valores crudos para el callback onMove sin setState
+  const rawPos = useRef({ x: 0, y: 0 });
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      
-      onPanResponderGrant: () => {
-        // Inicio del toque
-      },
-      
+      onMoveShouldSetPanResponder:  () => true,
+
       onPanResponderMove: (_, gesture) => {
-        let newX = gesture.dx;
-        let newY = gesture.dy;
+        let dx = gesture.dx;
+        let dy = gesture.dy;
 
-        // Restringir según el modo
-        if (mode === 'vertical') {
-          newX = 0;
-        } else if (mode === 'horizontal') {
-          newY = 0;
+        // Restringir según modo
+        if (mode === 'vertical')   dx = 0;
+        if (mode === 'horizontal') dy = 0;
+
+        // Limitar al círculo
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > maxDistance) {
+          const angle = Math.atan2(dy, dx);
+          dx = Math.cos(angle) * maxDistance;
+          dy = Math.sin(angle) * maxDistance;
         }
 
-        // Limitar al área circular
-        const distance = Math.sqrt(newX * newX + newY * newY);
-        const maxDistance = centerRadius - stickRadius;
+        // Actualizar posición animada directamente (sin setState → sin re-render)
+        animPos.setValue({ x: dx, y: dy });
 
-        if (distance > maxDistance) {
-          const angle = Math.atan2(newY, newX);
-          newX = Math.cos(angle) * maxDistance;
-          newY = Math.sin(angle) * maxDistance;
-        }
-
-        setPosition({ x: newX, y: newY });
-
-        // Normalizar valores a -1.0 ... 1.0
-        const normalizedX = newX / maxDistance;
-        const normalizedY = -newY / maxDistance; // Invertir Y para que arriba sea positivo
-
-        onMove(normalizedX, normalizedY);
+        // Guardar raw y llamar callback
+        rawPos.current = { x: dx, y: dy };
+        const nx =  dx / maxDistance;
+        const ny = -dy / maxDistance; // Y invertido: arriba = positivo
+        onMove(nx, ny);
       },
-      
+
       onPanResponderRelease: () => {
-        // Volver al centro
-        setPosition({ x: 0, y: 0 });
+        // Spring de vuelta al centro — animado en UI thread
+        Animated.spring(animPos, {
+          toValue:         { x: 0, y: 0 },
+          useNativeDriver: true,
+          tension:         120,
+          friction:        8,
+        }).start();
+
+        rawPos.current = { x: 0, y: 0 };
+        onMove(0, 0);
+      },
+
+      onPanResponderTerminate: () => {
+        Animated.spring(animPos, {
+          toValue:         { x: 0, y: 0 },
+          useNativeDriver: true,
+          tension:         120,
+          friction:        8,
+        }).start();
+        rawPos.current = { x: 0, y: 0 };
         onMove(0, 0);
       },
     })
@@ -69,44 +85,41 @@ export const Joystick: React.FC<JoystickProps> = ({
 
   return (
     <View style={[styles.container, { width: size, height: size }]}>
-      {/* Base del joystick */}
-      <View style={[styles.base, { 
-        width: size, 
-        height: size, 
+      {/* Base */}
+      <View style={[styles.base, {
+        width:        size,
+        height:       size,
         borderRadius: size / 2,
-        borderColor: color + '4D', // 30% opacity
+        borderColor:  color + '4D',
       }]}>
-        {/* Líneas de guía */}
         {mode !== 'horizontal' && (
-          <View style={[styles.guideLine, styles.verticalLine, { backgroundColor: color + '33' }]} />
+          <View style={[styles.guideLine, styles.verticalLine,   { backgroundColor: color + '33' }]} />
         )}
         {mode !== 'vertical' && (
           <View style={[styles.guideLine, styles.horizontalLine, { backgroundColor: color + '33' }]} />
         )}
-
-        {/* Centro */}
         <View style={[styles.centerDot, { backgroundColor: color }]} />
       </View>
 
-      {/* Stick móvil */}
-      <View
+      {/* Stick — transform manejado por Animated en el UI thread */}
+      <Animated.View
         {...panResponder.panHandlers}
         style={[
           styles.stick,
           {
-            width: stickRadius * 2,
-            height: stickRadius * 2,
+            width:        stickRadius * 2,
+            height:       stickRadius * 2,
             borderRadius: stickRadius,
             backgroundColor: color,
             transform: [
-              { translateX: position.x },
-              { translateY: position.y },
+              { translateX: animPos.x },
+              { translateY: animPos.y },
             ],
           },
         ]}
       >
         <View style={styles.stickInner} />
-      </View>
+      </Animated.View>
     </View>
   );
 };
@@ -114,47 +127,39 @@ export const Joystick: React.FC<JoystickProps> = ({
 const styles = StyleSheet.create({
   container: {
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems:     'center',
   },
   base: {
-    position: 'absolute',
+    position:        'absolute',
     backgroundColor: 'rgba(20, 20, 30, 0.9)',
-    borderWidth: 3,
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderWidth:     3,
+    justifyContent:  'center',
+    alignItems:      'center',
   },
-  guideLine: {
-    position: 'absolute',
-  },
-  verticalLine: {
-    width: 2,
-    height: '80%',
-  },
-  horizontalLine: {
-    width: '80%',
-    height: 2,
-  },
+  guideLine:      { position: 'absolute' },
+  verticalLine:   { width: 2, height: '80%' },
+  horizontalLine: { width: '80%', height: 2 },
   centerDot: {
-    width: 8,
-    height: 8,
+    width:        8,
+    height:       8,
     borderRadius: 4,
   },
   stick: {
-    position: 'absolute',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    elevation: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    position:        'absolute',
+    justifyContent:  'center',
+    alignItems:      'center',
+    borderWidth:     2,
+    borderColor:     'rgba(255, 255, 255, 0.3)',
+    elevation:       15,
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 4 },
+    shadowOpacity:   0.3,
+    shadowRadius:    8,
   },
   stickInner: {
-    width: '60%',
-    height: '60%',
-    borderRadius: 100,
+    width:           '60%',
+    height:          '60%',
+    borderRadius:    100,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
 });

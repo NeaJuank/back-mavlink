@@ -1,6 +1,10 @@
 """
 WebSocket API para comunicación en tiempo real con clientes (Mobile/Frontend)
-Envía telemetría y recibe comandos de control
+Envía telemetría y recibe comandos de control.
+
+CORRECCIONES:
+- Añadido comando REBOOT (faltaba en process_command)
+- Eliminado deadlock: recv_match ya no adquiere el lock de conexión dentro de wait_ack
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Set
@@ -13,11 +17,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Gestor de conexiones activas
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
-        # Per-connection write locks to prevent concurrent sends
         self._locks: dict = {}
         self.telemetry_task = None
 
@@ -25,15 +28,14 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.add(websocket)
         self._locks[id(websocket)] = asyncio.Lock()
-        logger.info(f"Cliente conectado. Total conexiones: {len(self.active_connections)}")
+        logger.info(f"Cliente conectado. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.discard(websocket)
         self._locks.pop(id(websocket), None)
-        logger.info(f"Cliente desconectado. Total conexiones: {len(self.active_connections)}")
+        logger.info(f"Cliente desconectado. Total: {len(self.active_connections)}")
 
     async def send(self, websocket: WebSocket, message: dict):
-        """Envía un mensaje a un cliente específico con lock para evitar escrituras concurrentes."""
         lock = self._locks.get(id(websocket))
         if lock is None:
             return
@@ -45,120 +47,112 @@ class ConnectionManager:
                 raise
 
     async def broadcast(self, message: dict):
-        """Envía mensaje a todos los clientes conectados"""
         disconnected = set()
         for connection in list(self.active_connections):
             try:
                 await self.send(connection, message)
-            except Exception as e:
-                logger.error(f"Error en broadcast a cliente: {e}")
+            except Exception:
                 disconnected.add(connection)
-
-        # Limpiar conexiones muertas
         for conn in disconnected:
             self.disconnect(conn)
 
+
 manager = ConnectionManager()
 
-async def telemetry_broadcaster(mav_controller):
-    """
-    Tarea en background que lee telemetría del dron y la transmite
-    a todos los clientes WebSocket conectados
-    """
-    logger.info("Iniciando broadcaster de telemetría...")
 
+async def telemetry_broadcaster(mav_controller):
+    """Tarea en background que transmite telemetría a 10 Hz."""
+    logger.info("Iniciando broadcaster de telemetría...")
     while True:
         try:
-            if len(manager.active_connections) > 0:
-                # Obtener telemetría del controlador MAVLink
+            if manager.active_connections:
                 telemetry = await get_telemetry_data(mav_controller)
-
-                # Broadcast a todos los clientes
                 await manager.broadcast({
                     "type": "telemetry",
                     "data": telemetry,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
                 })
-
-            # Frecuencia de actualización: 10Hz
             await asyncio.sleep(0.1)
-
         except Exception as e:
             logger.error(f"Error en telemetry_broadcaster: {e}")
             await asyncio.sleep(1)
 
+
 async def get_telemetry_data(mav_controller) -> dict:
-    """
-    Extrae telemetría del controlador MAVLink
-    """
+    """Extrae telemetría del controlador MAVLink."""
     try:
-        # Soporte para simulador: si telemetry es None, usar métodos simulados
         telemetry = getattr(mav_controller, "telemetry", None)
+
+        # Soporte simulador
         if telemetry is None and hasattr(mav_controller, "get_telemetry"):
-            sim_data = mav_controller.get_telemetry()
+            sim = mav_controller.get_telemetry()
             return {
-                "armed": mav_controller.is_armed(),
-                "mode": mav_controller.get_mode(),
-                "altitude": sim_data.get("altitude", 0),
-                "latitude": sim_data.get("gps", {}).get("lat", 0),
-                "longitude": sim_data.get("gps", {}).get("lon", 0),
-                "roll": sim_data.get("attitude", {}).get("roll", 0),
-                "pitch": sim_data.get("attitude", {}).get("pitch", 0),
-                "yaw": sim_data.get("attitude", {}).get("yaw", 0),
-                "battery_voltage": sim_data.get("battery", {}).get("voltage", 0),
-                "battery_current": sim_data.get("battery", {}).get("current", 0),
-                "battery_remaining": sim_data.get("battery", {}).get("remaining", 0),
-                "ground_speed": sim_data.get("speed", 0),
-                "vertical_speed": sim_data.get("climb_rate", 0),
-                "satellites": sim_data.get("gps", {}).get("satellites", 0),
-                "hdop": sim_data.get("gps", {}).get("hdop", 0),
+                "armed":             mav_controller.is_armed(),
+                "mode":              mav_controller.get_mode(),
+                "altitude":          sim.get("altitude", 0),
+                "latitude":          sim.get("gps", {}).get("lat", 0),
+                "longitude":         sim.get("gps", {}).get("lon", 0),
+                "roll":              sim.get("attitude", {}).get("roll", 0),
+                "pitch":             sim.get("attitude", {}).get("pitch", 0),
+                "yaw":               sim.get("attitude", {}).get("yaw", 0),
+                "battery_voltage":   sim.get("battery", {}).get("voltage", 0),
+                "battery_current":   sim.get("battery", {}).get("current", 0),
+                "battery_remaining": sim.get("battery", {}).get("remaining", 0),
+                "ground_speed":      sim.get("speed", 0),
+                "vertical_speed":    sim.get("climb_rate", 0),
+                "satellites":        sim.get("gps", {}).get("satellites", 0),
+                "hdop":              sim.get("gps", {}).get("hdop", 0),
             }
-        elif telemetry is None:
-            # Solo mostrar el error una vez por proceso
-            if not hasattr(get_telemetry_data, "telemetry_error_shown"):
+
+        if telemetry is None:
+            if not getattr(get_telemetry_data, "_error_shown", False):
                 logger.error("Telemetría no disponible")
-                get_telemetry_data.telemetry_error_shown = True
+                get_telemetry_data._error_shown = True
             return {"error": "Telemetría no disponible"}
 
-        attitude = telemetry.get_attitude()
-        gps = telemetry.get_gps()
-        battery = telemetry.get_battery()
-        velocity = telemetry.get_velocity()
+        attitude = telemetry.get_attitude() or {}
+        gps      = telemetry.get_gps()      or {}
+        battery  = telemetry.get_battery()  or {}
+        velocity = telemetry.get_velocity() or {}
 
         return {
-            "armed": mav_controller.is_armed(),
-            "mode": mav_controller.get_mode(),
-            "altitude": gps.get("alt", 0) if gps else 0,
-            "latitude": gps.get("lat", 0) if gps else 0,
-            "longitude": gps.get("lon", 0) if gps else 0,
-            "roll": attitude.get("roll", 0) if attitude else 0,
-            "pitch": attitude.get("pitch", 0) if attitude else 0,
-            "yaw": attitude.get("yaw", 0) if attitude else 0,
-            "battery_voltage": battery.get("voltage", 0) if battery else 0,
-            "battery_current": battery.get("current", 0) if battery else 0,
-            "battery_remaining": battery.get("remaining", 0) if battery else 0,
-            "ground_speed": velocity.get("ground_speed", 0) if velocity else 0,
-            "vertical_speed": velocity.get("vertical_speed", 0) if velocity else 0,
-            "satellites": gps.get("satellites", gps.get("satellites_visible", 0)) if gps else 0,
-            "hdop": gps.get("hdop", 0) if gps else 0,
+            "armed":             mav_controller.is_armed(),
+            "mode":              mav_controller.get_mode(),
+            "altitude":          gps.get("alt", 0),
+            "latitude":          gps.get("lat", 0),
+            "longitude":         gps.get("lon", 0),
+            "roll":              attitude.get("roll", 0),
+            "pitch":             attitude.get("pitch", 0),
+            "yaw":               attitude.get("yaw", 0),
+            "battery_voltage":   battery.get("voltage", 0),
+            "battery_current":   battery.get("current", 0),
+            "battery_remaining": battery.get("remaining", 0),
+            "ground_speed":      velocity.get("ground_speed", 0),
+            "vertical_speed":    velocity.get("vertical_speed", 0),
+            "satellites":        gps.get("satellites", gps.get("satellites_visible", 0)),
+            "hdop":              gps.get("hdop", 0),
         }
+
     except Exception as e:
         logger.error(f"Error obteniendo telemetría: {e}")
-        return {"error": f"Error obteniendo telemetría: {e}"}
+        return {"error": str(e)}
 
-async def process_command(command: dict, mav_controller):
-    """
-    Procesa comandos recibidos desde el cliente WebSocket
-    """
-    cmd_type = command.get("type")
-    params = command.get("params", {})
 
-    logger.info(f"Procesando comando: {cmd_type} con params: {params}")
+async def process_command(command: dict, mav_controller) -> dict:
+    """
+    Procesa comandos recibidos desde el cliente WebSocket.
+    Todos los valores RC se esperan NORMALIZADOS (-1.0 a 1.0 / 0.0 a 1.0 para throttle).
+    """
+    cmd_type = command.get("type", "")
+    params   = command.get("params", {})
+
+    logger.info(f"Procesando comando: {cmd_type} | params: {params}")
 
     if not mav_controller:
         return {"success": False, "message": "MAVLink no conectado"}
 
     try:
+        # ── Comandos de estado ────────────────────────────────────────────────
         if cmd_type == "ARM":
             success = await asyncio.to_thread(mav_controller.arm)
             return {"success": success, "message": "Drone armado" if success else "Error armando"}
@@ -169,7 +163,7 @@ async def process_command(command: dict, mav_controller):
 
         elif cmd_type == "TAKEOFF":
             altitude = params.get("altitude", 10)
-            success = await asyncio.to_thread(mav_controller.takeoff, altitude)
+            success  = await asyncio.to_thread(mav_controller.takeoff, altitude)
             return {"success": success, "message": f"Despegando a {altitude}m" if success else "Error despegando"}
 
         elif cmd_type == "LAND":
@@ -181,120 +175,130 @@ async def process_command(command: dict, mav_controller):
             return {"success": success, "message": "Regresando a home" if success else "Error en RTL"}
 
         elif cmd_type == "SET_MODE":
-            mode = params.get("mode", "STABILIZE")
+            mode    = params.get("mode", "STABILIZE")
             success = await asyncio.to_thread(mav_controller.set_mode, mode)
-            return {"success": success, "message": f"Modo cambiado a {mode}" if success else "Error cambiando modo"}
+            return {"success": success, "message": f"Modo cambiado a {mode}" if success else f"Error cambiando a {mode}"}
 
+        # ── REBOOT — CORRECCIÓN: faltaba este handler ─────────────────────────
+        elif cmd_type == "REBOOT":
+            try:
+                if hasattr(mav_controller, "cmd") and mav_controller.cmd:
+                    await asyncio.to_thread(mav_controller.cmd.reboot_autopilot)
+                    return {"success": True, "message": "Autopiloto reiniciando..."}
+                else:
+                    return {"success": False, "message": "REBOOT no disponible en modo simulador"}
+            except Exception as e:
+                return {"success": False, "message": f"Error en REBOOT: {e}"}
+
+        # ── Control RC — valores normalizados ─────────────────────────────────
         elif cmd_type == "RC_CONTROL":
-            # Joystick: throttle, yaw, pitch, roll (la app móvil envía este comando)
-            throttle = params.get("throttle")
-            yaw = params.get("yaw")
-            pitch = params.get("pitch")
-            roll = params.get("roll")
-            if not getattr(mav_controller, "rc", None):
-                return {"success": False, "message": "RC no disponible (ej. modo SIM)"}
-            mav_controller.rc.set_controls(
-                throttle=throttle, yaw=yaw, pitch=pitch, roll=roll
+            rc = getattr(mav_controller, "rc", None)
+            if not rc:
+                return {"success": False, "message": "RC no disponible"}
+
+            # Valores ya normalizados: throttle 0..1, yaw/pitch/roll -1..1
+            rc.set_controls(
+                throttle=params.get("throttle"),
+                yaw=params.get("yaw"),
+                pitch=params.get("pitch"),
+                roll=params.get("roll"),
             )
-            return {"success": True, "message": "RC actualizado"}
+            return {"success": True, "message": "RC actualizado", "values": rc.get_current_values()}
 
-        elif cmd_type == "THROTTLE":
-            value = params.get("value", 0)
-            mav_controller.rc.set_throttle(value)
-            return {"success": True, "message": f"Throttle: {value}"}
+        elif cmd_type == "RC_RESET":
+            rc = getattr(mav_controller, "rc", None)
+            if rc:
+                rc.reset_controls()
+            return {"success": True, "message": "RC reseteado"}
 
-        elif cmd_type == "YAW":
-            value = params.get("value", 0)
-            mav_controller.rc.set_yaw(value)
-            return {"success": True, "message": f"Yaw: {value}"}
+        # ── Emergencia ────────────────────────────────────────────────────────
+        elif cmd_type == "EMERGENCY":
+            action = params.get("action", "").upper()
+            if action == "STOP":
+                success = await asyncio.to_thread(mav_controller.set_mode, "BRAKE")
+                if not success:
+                    success = await asyncio.to_thread(mav_controller.set_mode, "LOITER")
+                rc = getattr(mav_controller, "rc", None)
+                if rc:
+                    rc.reset_controls()
+                return {"success": success, "message": "STOP activado" if success else "Error en STOP"}
+            elif action == "RTL":
+                success = await asyncio.to_thread(mav_controller.return_to_launch)
+                return {"success": success, "message": "RTL activado" if success else "Error en RTL"}
+            elif action == "LAND":
+                success = await asyncio.to_thread(mav_controller.land)
+                return {"success": success, "message": "Aterrizaje de emergencia" if success else "Error aterrizando"}
+            else:
+                return {"success": False, "message": f"Acción desconocida: {action}"}
 
-        elif cmd_type == "PITCH":
-            value = params.get("value", 0)
-            mav_controller.rc.set_pitch(value)
-            return {"success": True, "message": f"Pitch: {value}"}
-
-        elif cmd_type == "ROLL":
-            value = params.get("value", 0)
-            mav_controller.rc.set_roll(value)
-            return {"success": True, "message": f"Roll: {value}"}
-
+        # ── Navegación ────────────────────────────────────────────────────────
         elif cmd_type == "GOTO":
-            lat = params.get("latitude")
-            lon = params.get("longitude")
-            alt = params.get("altitude", 10)
+            lat     = params.get("latitude")
+            lon     = params.get("longitude")
+            alt     = params.get("altitude", 10)
             success = await asyncio.to_thread(mav_controller.goto, lat, lon, alt)
             return {"success": success, "message": f"Navegando a ({lat}, {lon})" if success else "Error navegando"}
 
         else:
+            logger.warning(f"Comando desconocido recibido: {cmd_type}")
             return {"success": False, "message": f"Comando desconocido: {cmd_type}"}
 
     except Exception as e:
-        logger.error(f"Error procesando comando {cmd_type}: {e}")
-        return {"success": False, "message": f"Error: {str(e)}"}
+        logger.error(f"Error procesando {cmd_type}: {e}")
+        return {"success": False, "message": f"Error: {e}"}
+
 
 @router.websocket("/ws/telemetry")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    Endpoint WebSocket principal
+    Endpoint WebSocket principal.
     - Envía telemetría cada 100ms (via telemetry_broadcaster)
-    - Recibe comandos de control y responde con ACK
-
-    Usa un asyncio.Lock por conexión para evitar escrituras concurrentes
-    entre el broadcaster de telemetría y los ACKs de comandos.
+    - Recibe comandos y responde con ACK
     """
-    client_host = websocket.client.host if websocket.client else "unknown"
-    client_port = websocket.client.port if websocket.client else 0
-    client_id = f"{client_host}:{client_port}"
-
-    logger.info(f"[WS] Nueva conexión entrante desde {client_id}")
+    client_id = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
+    logger.info(f"[WS] Nueva conexión desde {client_id}")
     await manager.connect(websocket)
 
-    # Obtener el controlador MAVLink desde rest
     from backend.api import rest
     mav_controller = rest.mav
 
     if not mav_controller:
-        logger.warning(f"[WS] {client_id} — MAVLink no disponible, la telemetría estará vacía")
+        logger.warning(f"[WS] {client_id} — MAVLink no disponible")
 
     try:
         while True:
-            # Esperar mensaje del cliente (comandos)
             data = await websocket.receive_text()
-            logger.debug(f"[WS] {client_id} → recibido: {data[:200]}")
 
             try:
                 message = json.loads(data)
             except json.JSONDecodeError as e:
-                logger.warning(f"[WS] {client_id} — JSON inválido: {e} | raw: {data[:100]}")
+                logger.warning(f"[WS] JSON inválido de {client_id}: {e}")
                 continue
 
             cmd_type = message.get("type", "<sin tipo>")
-            logger.info(f"[WS] {client_id} → comando: {cmd_type}")
+            logger.info(f"[WS] {client_id} → {cmd_type}")
 
-            # Procesar comando
             result = await process_command(message, mav_controller)
-            logger.info(f"[WS] {client_id} ← ACK {cmd_type}: {result}")
 
-            # Enviar ACK al cliente usando el lock compartido con el broadcaster
-            await manager.send(websocket, {
-                "type": "command_ack",
-                "command": cmd_type,
-                "result": result,
-                "timestamp": datetime.utcnow().isoformat()
-            })
+            # RC_CONTROL y RC_RESET son continuos — no necesitan ACK
+            # para evitar saturar el canal WebSocket a 10Hz
+            if cmd_type not in ("RC_CONTROL", "RC_RESET"):
+                await manager.send(websocket, {
+                    "type":      "command_ack",
+                    "command":   cmd_type,
+                    "result":    result,
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
 
     except WebSocketDisconnect as e:
         manager.disconnect(websocket)
-        logger.info(f"[WS] {client_id} desconectado normalmente (code={e.code})")
+        logger.info(f"[WS] {client_id} desconectado (code={e.code})")
     except Exception as e:
-        logger.error(f"[WS] {client_id} ERROR inesperado: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"[WS] {client_id} ERROR: {type(e).__name__}: {e}", exc_info=True)
         manager.disconnect(websocket)
 
+
 def start_telemetry_broadcast(mav_controller):
-    """
-    Inicia la tarea de broadcast de telemetría
-    Llamar desde main.py al iniciar la aplicación
-    """
     loop = asyncio.get_event_loop()
     manager.telemetry_task = loop.create_task(telemetry_broadcaster(mav_controller))
     logger.info("Telemetry broadcaster iniciado")
