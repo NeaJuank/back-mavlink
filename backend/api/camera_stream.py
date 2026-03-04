@@ -7,6 +7,8 @@ CORRECCIONES:
 - Frame negro de fallback cuando la cámara no está disponible (evita hang infinito)
 - Guard para rs=None: error claro si pyrealsense2 no está instalado
 - camera.start() verifica rs antes de intentar usar la librería
+- /stream excluido de Swagger (include_in_schema=False) — no funciona en Swagger UI
+- /view agregado: página HTML para ver el stream en el navegador
 """
 try:
     import pyrealsense2 as rs
@@ -19,7 +21,7 @@ import threading
 import asyncio
 import logging
 from fastapi import APIRouter, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +45,14 @@ class RealSenseCamera:
     """Controlador para Intel RealSense D435i."""
 
     def __init__(self):
-        self.pipeline     = None
-        self.config       = None
-        self.running      = False
+        self.pipeline      = None
+        self.config        = None
+        self.running       = False
         self.current_frame = None
-        self.depth_frame  = None
-        self.lock         = threading.Lock()
+        self.depth_frame   = None
+        self.lock          = threading.Lock()
 
     def start(self, width=640, height=480, fps=30):
-        # CORRECCIÓN: verificar que pyrealsense2 está disponible
         if rs is None:
             raise RuntimeError(
                 "pyrealsense2 no está instalado. "
@@ -88,9 +89,9 @@ class RealSenseCamera:
     def _capture_loop(self):
         while self.running:
             try:
-                frames       = self.pipeline.wait_for_frames(timeout_ms=1000)
-                color_frame  = frames.get_color_frame()
-                depth_frame  = frames.get_depth_frame()
+                frames      = self.pipeline.wait_for_frames(timeout_ms=1000)
+                color_frame = frames.get_color_frame()
+                depth_frame = frames.get_depth_frame()
 
                 if not color_frame:
                     continue
@@ -125,8 +126,8 @@ class RealSenseCamera:
         font  = cv2.FONT_HERSHEY_SIMPLEX
         green = (0, 255, 0)
 
-        cv2.putText(frame, f"ALT: {telemetry.get('altitude', 0):.1f}m",       (10, 30),       font, 0.7, green, 2)
-        cv2.putText(frame, f"SPD: {telemetry.get('ground_speed', 0):.1f}m/s", (10, 60),       font, 0.7, green, 2)
+        cv2.putText(frame, f"ALT: {telemetry.get('altitude', 0):.1f}m",       (10, 30), font, 0.7, green, 2)
+        cv2.putText(frame, f"SPD: {telemetry.get('ground_speed', 0):.1f}m/s", (10, 60), font, 0.7, green, 2)
 
         bat   = telemetry.get("battery_remaining", 0)
         b_col = (0, 255, 0) if bat > 30 else (0, 165, 255) if bat > 15 else (0, 0, 255)
@@ -152,13 +153,7 @@ camera = RealSenseCamera()
 async def generate_mjpeg_stream():
     """
     Generador ASYNC de stream MJPEG.
-
-    CORRECCIÓN: Era un generador síncrono (`def`) dentro de un endpoint async,
-    lo que bloqueaba el event loop de uvicorn.
-    Ahora es `async def` y cede control con `await asyncio.sleep(0)` en cada frame.
-
-    Si la cámara no tiene frame disponible se envía el frame de fallback negro
-    en lugar de hacer `continue` infinito (lo que colgaba la respuesta HTTP).
+    Si la cámara no tiene frame disponible se envía el frame de fallback negro.
     """
     while True:
         frame = camera.get_frame()
@@ -176,17 +171,50 @@ async def generate_mjpeg_stream():
             + b"\r\n"
         )
 
-        # Ceder el event loop (~30 fps máx)
         await asyncio.sleep(1 / 30)
 
 
-@router.get("/stream")
+# CAMBIO: include_in_schema=False para excluir de Swagger (no funciona ahí)
+@router.get("/stream", response_class=StreamingResponse, include_in_schema=False)
 async def video_stream():
-    """Endpoint de streaming MJPEG."""
+    """Endpoint de streaming MJPEG — abrir directo en navegador o <img>."""
     return StreamingResponse(
         generate_mjpeg_stream(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+# NUEVO: página HTML para ver el stream en el navegador
+@router.get("/view", response_class=HTMLResponse)
+async def view_stream():
+    """Abre esta URL en el navegador para ver el video en tiempo real."""
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>RealSense D435i — Live Stream</title>
+    <style>
+      body {
+        background: #000;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        font-family: monospace;
+        color: #0f0;
+      }
+      h3 { margin-bottom: 10px; letter-spacing: 2px; }
+      img { max-width: 100%; max-height: 85vh; border: 1px solid #0f0; }
+    </style>
+  </head>
+  <body>
+    <h3>📷 RealSense D435i — LIVE</h3>
+    <img src="/api/camera/stream" alt="Camera stream" />
+  </body>
+</html>
+""")
 
 
 @router.get("/snapshot")
@@ -228,7 +256,7 @@ async def stop_camera():
 @router.get("/status")
 async def camera_status():
     return {
-        "running":   camera.running,
-        "has_frame": camera.current_frame is not None,
+        "running":            camera.running,
+        "has_frame":          camera.current_frame is not None,
         "realsense_available": rs is not None,
     }
