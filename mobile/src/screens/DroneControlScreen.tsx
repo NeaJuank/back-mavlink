@@ -50,30 +50,53 @@ const MODE_GROUPS = [
   { label: 'EMERGENCIA / RETORNO',modes: ['RTL', 'SMARTRTL', 'LAND'] },
 ];
 
-// ── Todos los modos válidos que el backend acepta ──────────────────────────────
-const VALID_MODES = Object.keys(MODE_META);
-
 export const DroneControlScreen: React.FC = () => {
   const { telemetry, connected, armDrone, disarmDrone, takeoff, land, emergency, setJoystick, sendCommand } =
     useDrone();
   const insets = useSafeAreaInsets();
 
-  const [videoUrl] = useState(`${API_URL}/api/camera/stream`);
-  const [showEmergency, setShowEmergency] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(false);
+  // ── Snapshot polling ──────────────────────────────────────────────────────
+  // React Native no soporta streams MJPEG en <Image>.
+  // Solución: pedir /api/camera/snapshot cada 100ms (≈10 fps).
+  // El timestamp en el URI fuerza a RN a recargar la imagen en cada tick
+  // (sin él cachea y nunca actualiza el frame).
+  const [snapshotUri, setSnapshotUri] = useState(`${API_URL}/api/camera/snapshot?t=0`);
+  const [cameraOk, setCameraOk]       = useState(true);
 
-  // ── PWM display — solo para mostrar en pantalla, NO se envían al backend ──────
-  // thrNorm: 0.0..1.0 | yaw/pitch/roll: -1.0..1.0
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSnapshotUri(`${API_URL}/api/camera/snapshot?t=${Date.now()}`);
+    }, 100); // 10 fps
+    return () => clearInterval(interval);
+  }, []);
+
+  const [showEmergency, setShowEmergency] = useState(false);
+  const [panelOpen, setPanelOpen]         = useState(false);
+
+  // ── Resetear joystick izquierdo al fondo cuando se arma ──────────────────
+  const [leftJoystickReset, setLeftJoystickReset] = useState(false);
+  const prevArmed = useRef<boolean>(false);
+
+  useEffect(() => {
+    const isArmed = telemetry?.armed ?? false;
+    if (isArmed && !prevArmed.current) {
+      setLeftJoystickReset(true);
+      setTimeout(() => setLeftJoystickReset(false), 150);
+    }
+    prevArmed.current = isArmed;
+  }, [telemetry?.armed]);
+
+  // ── PWM display ───────────────────────────────────────────────────────────
   const [normalizedValues, setNormalizedValues] = useState({ thrNorm: 0, yaw: 0, pitch: 0, roll: 0 });
 
-  const toPWMDisplay          = (v: number): number => Math.round(1500 + v * 500);
-  const toThrottlePWMDisplay  = (v: number): number => Math.round(1000 + v * 1000);
+  const toPWM         = (v: number): number => Math.round(1500 + v * 500);
+  const toThrottlePWM = (v: number): number => Math.round(1000 + v * 1000);
 
   const pwmDisplay = {
-    thr:   toThrottlePWMDisplay(normalizedValues.thrNorm), // 0→1000, 0.5→1500, 1→2000
-    yaw:   toPWMDisplay(normalizedValues.yaw),
-    pitch: toPWMDisplay(normalizedValues.pitch),
-    roll:  toPWMDisplay(normalizedValues.roll),
+    thr:   toThrottlePWM(normalizedValues.thrNorm),
+    yaw:   toPWM(normalizedValues.yaw),
+    pitch: toPWM(normalizedValues.pitch),
+    roll:  toPWM(normalizedValues.roll),
   };
 
   const pulseAnim    = useRef(new Animated.Value(1)).current;
@@ -111,7 +134,7 @@ export const DroneControlScreen: React.FC = () => {
     })
   ).current;
 
-  // ── Animaciones ──────────────────────────────────────────────────────────
+  // ── Animaciones ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (telemetry?.armed) {
       Animated.loop(Animated.sequence([
@@ -136,16 +159,9 @@ export const DroneControlScreen: React.FC = () => {
   }, [telemetry?.battery_remaining]);
 
   // ── Handlers joystick ─────────────────────────────────────────────────────
-  // CORRECCIÓN: Se envían valores NORMALIZADOS (-1.0 a 1.0) al backend.
-  // El backend (rc_override.py) es quien convierte a PWM.
   const handleLeftJoystick = (x: number, y: number) => {
-    // x = yaw normalizado, y = throttle normalizado (el joystick devuelve -1..1 en Y)
-    // Convertir Y del joystick (-1..1) a throttle (0..1)
-    const throttleNorm = (y + 1) / 2; // -1→0, 0→0.5, 1→1
-    const yawNorm      = x;           // -1..1 directo
-
-    setNormalizedValues(prev => ({ ...prev, thrNorm: throttleNorm, yaw: yawNorm }));
-    setJoystick(throttleNorm, yawNorm, undefined, undefined);
+    setNormalizedValues(prev => ({ ...prev, thrNorm: y, yaw: x }));
+    setJoystick(y, x, undefined, undefined);
   };
 
   const handleRightJoystick = (x: number, y: number) => {
@@ -153,12 +169,10 @@ export const DroneControlScreen: React.FC = () => {
     setJoystick(undefined, undefined, y, x);
   };
 
-  // ── Helper: ejecutar comando y mostrar resultado si falla ─────────────────
+  // ── Helper ────────────────────────────────────────────────────────────────
   const runCommand = async (fn: () => Promise<{ success: boolean; message: string }>) => {
     const result = await fn();
-    if (!result.success) {
-      Alert.alert('Error', result.message);
-    }
+    if (!result.success) Alert.alert('Error', result.message);
     return result;
   };
 
@@ -202,10 +216,7 @@ export const DroneControlScreen: React.FC = () => {
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Desarmar', style: 'destructive',
-          onPress: async () => {
-            closePanel();
-            await runCommand(disarmDrone);
-          },
+          onPress: async () => { closePanel(); await runCommand(disarmDrone); },
         },
       ]);
     } else {
@@ -213,10 +224,7 @@ export const DroneControlScreen: React.FC = () => {
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Armar',
-          onPress: async () => {
-            closePanel();
-            await runCommand(armDrone);
-          },
+          onPress: async () => { closePanel(); await runCommand(armDrone); },
         },
       ]);
     }
@@ -227,49 +235,28 @@ export const DroneControlScreen: React.FC = () => {
       TAKEOFF: () => { handleTakeoff(); closePanel(); },
       LAND: () => Alert.alert('Aterrizar', '¿Iniciar aterrizaje?', [
         { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Aterrizar',
-          onPress: async () => {
-            closePanel();
-            await runCommand(land);
-          },
-        },
+        { text: 'Aterrizar', onPress: async () => { closePanel(); await runCommand(land); } },
       ]),
       RTL: () => Alert.alert('RTL', '¿Retornar a casa?', [
         { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'RTL',
-          onPress: async () => {
-            closePanel();
-            await runCommand(() => sendCommand('SET_MODE', { mode: 'RTL' }));
-          },
-        },
+        { text: 'RTL', onPress: async () => { closePanel(); await runCommand(() => sendCommand('SET_MODE', { mode: 'RTL' })); } },
       ]),
-      BRAKE: () => {
-        closePanel();
-        runCommand(() => sendCommand('SET_MODE', { mode: 'BRAKE' }));
-      },
+      BRAKE: () => { closePanel(); runCommand(() => sendCommand('SET_MODE', { mode: 'BRAKE' })); },
       HOLD_POS: () => {
         const sat = Number(telemetry?.satellites ?? 0);
-        if (sat < 6) {
-          Alert.alert('Sin GPS', `Solo ${sat} satélites. LOITER requiere mínimo 6.`);
-          return;
-        }
+        if (sat < 6) { Alert.alert('Sin GPS', `Solo ${sat} satélites. LOITER requiere mínimo 6.`); return; }
         closePanel();
         runCommand(() => sendCommand('SET_MODE', { mode: 'LOITER' }));
       },
       REBOOT: () => Alert.alert('Reboot', '¿Reiniciar autopiloto?', [
         { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Reiniciar', style: 'destructive',
-          onPress: () => runCommand(() => sendCommand('REBOOT', {})),
-        },
+        { text: 'Reiniciar', style: 'destructive', onPress: () => runCommand(() => sendCommand('REBOOT', {})) },
       ]),
     };
     map[id]?.();
   };
 
-  // ── Valores telemetría ───────────────────────────────────────────────────
+  // ── Valores telemetría ────────────────────────────────────────────────────
   const batPct   = Number(telemetry?.battery_remaining ?? 0);
   const batColor = batPct > 50 ? '#00ff88' : batPct > 20 ? '#ffaa00' : '#ff0044';
   const sat      = Number(telemetry?.satellites ?? 0);
@@ -282,9 +269,23 @@ export const DroneControlScreen: React.FC = () => {
 
       <View style={styles.edgeZone} {...edgePanResponder.panHandlers} />
 
-      {/* ══ VIDEO ══ */}
+      {/* ══ VIDEO — snapshot polling ══ */}
       <View style={styles.videoContainer}>
-        <Image source={{ uri: videoUrl }} style={styles.video} resizeMode="cover" />
+        <Image
+          source={{ uri: snapshotUri }}
+          style={styles.video}
+          resizeMode="cover"
+          onError={() => setCameraOk(false)}
+          onLoad={()  => setCameraOk(true)}
+        />
+
+        {!cameraOk && (
+          <View style={styles.cameraOverlay}>
+            <Text style={styles.cameraOverlayIcon}>📷</Text>
+            <Text style={styles.cameraOverlayText}>CÁMARA NO DISPONIBLE</Text>
+          </View>
+        )}
+
         <View style={styles.vignette} />
 
         <TouchableOpacity
@@ -298,7 +299,6 @@ export const DroneControlScreen: React.FC = () => {
         </TouchableOpacity>
 
         <View style={[styles.hudOverlay, { paddingTop: insets.top + 8 }]}>
-          {/* Top Bar */}
           <View style={styles.topBar}>
             <View style={[styles.pill, { borderColor: connected ? '#00ff8840' : '#ff004440', marginLeft: 44 }]}>
               <View style={[styles.statusDot, { backgroundColor: connected ? '#00ff88' : '#ff0044' }]} />
@@ -324,7 +324,6 @@ export const DroneControlScreen: React.FC = () => {
             </Animated.View>
           </View>
 
-          {/* Chips telemetría */}
           <View style={styles.telemetryRow}>
             {[
               { label: 'ALT', value: (Number(telemetry?.altitude ?? 0)).toFixed(1), unit: 'm' },
@@ -348,7 +347,6 @@ export const DroneControlScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Crosshair */}
           <View style={styles.crosshairWrap}>
             <View style={styles.crosshairH} />
             <View style={styles.crosshairV} />
@@ -359,7 +357,6 @@ export const DroneControlScreen: React.FC = () => {
             <View style={[styles.corner, styles.cornerBR]} />
           </View>
 
-          {/* Barra altitud */}
           <View style={styles.altBar}>
             <View style={[styles.altFill, { height: `${Math.min((Number(telemetry?.altitude ?? 0) / 100) * 100, 100)}%` }]} />
           </View>
@@ -431,15 +428,27 @@ export const DroneControlScreen: React.FC = () => {
           </View>
         )}
 
-        {/* Joysticks */}
+        {/* ══ JOYSTICKS ══ */}
         <View style={styles.joystickContainer}>
+
           <View style={styles.joystickWrapper}>
             <Text style={styles.joystickLabelTop}>THR / YAW</Text>
-            <Joystick onMove={handleLeftJoystick} size={SCREEN_WIDTH * 0.35} mode="both" color="#00ff88" />
+            <Joystick
+              onMove={handleLeftJoystick}
+              size={SCREEN_WIDTH * 0.35}
+              mode="mode2"
+              color="#00ff88"
+              resetToBottom={leftJoystickReset}
+            />
             <View style={styles.pwmRow}>
               <View style={styles.pwmChip}>
                 <Text style={styles.pwmLabel}>THR</Text>
-                <Text style={[styles.pwmValue, { color: pwmDisplay.thr > 1500 ? '#00ff88' : pwmDisplay.thr < 1500 ? '#ff6644' : '#555' }]}>
+                <Text style={[styles.pwmValue, {
+                  color: pwmDisplay.thr >= 1800 ? '#ff4444'
+                       : pwmDisplay.thr >= 1500 ? '#00ff88'
+                       : pwmDisplay.thr >= 1200 ? '#ffaa00'
+                       : '#555'
+                }]}>
                   {pwmDisplay.thr}
                 </Text>
               </View>
@@ -465,7 +474,12 @@ export const DroneControlScreen: React.FC = () => {
 
           <View style={styles.joystickWrapper}>
             <Text style={styles.joystickLabelTop}>PITCH / ROLL</Text>
-            <Joystick onMove={handleRightJoystick} size={SCREEN_WIDTH * 0.35} mode="both" color="#00aaff" />
+            <Joystick
+              onMove={handleRightJoystick}
+              size={SCREEN_WIDTH * 0.35}
+              mode="both"
+              color="#00aaff"
+            />
             <View style={styles.pwmRow}>
               <View style={styles.pwmChip}>
                 <Text style={styles.pwmLabel}>PIT</Text>
@@ -481,6 +495,7 @@ export const DroneControlScreen: React.FC = () => {
               </View>
             </View>
           </View>
+
         </View>
       </View>
 
@@ -631,6 +646,10 @@ const styles = StyleSheet.create({
   video:          { width: '100%', height: '100%' },
   vignette:       { position: 'absolute', width: '100%', height: '100%', borderWidth: 40, borderColor: 'rgba(0,0,0,0.6)' },
   hudOverlay:     { position: 'absolute', width: '100%', height: '100%', padding: 12 },
+
+  cameraOverlay:     { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', gap: 8 },
+  cameraOverlayIcon: { fontSize: 32 },
+  cameraOverlayText: { color: '#333', fontSize: 11, fontWeight: '800', letterSpacing: 2 },
 
   menuBtn: {
     position: 'absolute', left: 12,

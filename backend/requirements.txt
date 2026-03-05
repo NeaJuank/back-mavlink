@@ -10,7 +10,7 @@ pytest==8.0.0
 websockets==11.0.3
 # Dependencias adicionales para streaming de cámara Intel RealSense D435i
 # Agregar estas líneas a tu backend/requirements.txt existente
-
+ 
 # Intel RealSense SDK
 #pyrealsense2==2.54.2
 

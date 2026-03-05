@@ -28,7 +28,6 @@ export interface CommandResult {
 interface DroneContextType {
   telemetry:   Telemetry;
   connected:   boolean;
-  // Todos los comandos devuelven Promise<CommandResult> para poder mostrar errores
   sendCommand: (type: string, params?: any) => Promise<CommandResult>;
   armDrone:    () => Promise<CommandResult>;
   disarmDrone: () => Promise<CommandResult>;
@@ -71,10 +70,16 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [telemetry, setTelemetry] = useState<Telemetry>(DEFAULT_TELEMETRY);
   const [connected, setConnected] = useState(false);
 
-  const ws                 = useRef<WebSocket | null>(null);
-  const reconnectTimeout   = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Mapa de comandos pendientes: type → resolve de la Promise
-  const pendingCommands    = useRef<Map<string, (result: CommandResult) => void>>(new Map());
+  const ws               = useRef<WebSocket | null>(null);
+  const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCommands  = useRef<Map<string, (result: CommandResult) => void>>(new Map());
+
+  // ── Estado RC persistente ─────────────────────────────────────────────────
+  // Guarda los últimos valores de todos los canales para poder reenviarlos
+  // a 10 Hz aunque el usuario no mueva los joysticks.
+  // ArduPilot tiene un RC override timeout de ~500 ms: si no recibe paquetes
+  // en ese tiempo libera el control, lo que haría caer el throttle a 0.
+  const rcValues = useRef({ throttle: 0, yaw: 0, pitch: 0, roll: 0 });
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -96,19 +101,16 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setTelemetry(message.data);
 
           } else if (message.type === 'command_ack') {
-            // Resolver la Promise del comando que estaba esperando
             const cmdType = message.command as string;
             const result: CommandResult = {
               success: message.result?.success ?? false,
               message: message.result?.message ?? '',
             };
-
             const resolve = pendingCommands.current.get(cmdType);
             if (resolve) {
               resolve(result);
               pendingCommands.current.delete(cmdType);
             }
-
             console.log(`[WS] ACK ${cmdType}:`, result);
 
           } else {
@@ -128,7 +130,6 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.warn(`[WS] ⚠️ Cerrado — code=${event.code}`);
         setConnected(false);
 
-        // Rechazar todos los comandos pendientes
         pendingCommands.current.forEach((resolve) => {
           resolve({ success: false, message: 'Conexión perdida' });
         });
@@ -153,9 +154,25 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [connectWebSocket]);
 
-  // ── sendCommand — único canal de comandos ────────────────────────────────────
-  // Todos los comandos van por WebSocket y devuelven Promise<CommandResult>
-  // con timeout de 5 segundos para no quedar esperando indefinidamente.
+  // ── RC Heartbeat a 10 Hz ──────────────────────────────────────────────────
+  // Reenvía los valores RC actuales cada 100 ms para evitar que ArduPilot
+  // libere el RC override por timeout (~500 ms sin paquetes).
+  // Esto garantiza que el throttle se mantenga estable aunque el usuario
+  // no mueva ningún joystick.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (ws.current?.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({
+          type:   'RC_CONTROL',
+          params: { ...rcValues.current },
+        }));
+      }
+    }, 100); // 10 Hz
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── sendCommand ───────────────────────────────────────────────────────────
 
   const sendCommand = useCallback((type: string, params: any = {}): Promise<CommandResult> => {
     return new Promise((resolve) => {
@@ -164,8 +181,7 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
-      // RC_CONTROL y RC_RESET no reciben ACK del backend (son continuos a 10Hz)
-      // Se resuelven inmediatamente sin esperar respuesta
+      // RC_CONTROL y RC_RESET no esperan ACK — se envían directo
       const NO_ACK_COMMANDS = ['RC_CONTROL', 'RC_RESET'];
       if (NO_ACK_COMMANDS.includes(type)) {
         ws.current.send(JSON.stringify({ type, params }));
@@ -173,7 +189,6 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
-      // Timeout de 5 segundos para comandos que sí esperan ACK
       const timer = setTimeout(() => {
         if (pendingCommands.current.has(type)) {
           pendingCommands.current.delete(type);
@@ -191,7 +206,7 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, []);
 
-  // ── Comandos de alto nivel ────────────────────────────────────────────────────
+  // ── Comandos de alto nivel ────────────────────────────────────────────────
 
   const armDrone = useCallback(() =>
     sendCommand('ARM'), [sendCommand]);
@@ -208,15 +223,28 @@ export const DroneProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const emergency = useCallback((action: 'STOP' | 'RTL' | 'LAND') =>
     sendCommand('EMERGENCY', { action }), [sendCommand]);
 
-  // RC Control — no necesita ACK, es continuo a 10Hz
+  // ── setJoystick ───────────────────────────────────────────────────────────
+  // Actualiza solo los canales que recibe (undefined = no cambiar).
+  // El RC heartbeat se encarga de reenviar los 4 valores a 10 Hz,
+  // así que aquí solo necesitamos actualizar el estado interno.
   const setJoystick = useCallback((
-    throttle?: number, yaw?: number, pitch?: number, roll?: number
+    throttle?: number,
+    yaw?:      number,
+    pitch?:    number,
+    roll?:     number,
   ) => {
-    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-    ws.current.send(JSON.stringify({
-      type:   'RC_CONTROL',
-      params: { throttle, yaw, pitch, roll },
-    }));
+    if (throttle !== undefined) rcValues.current.throttle = throttle;
+    if (yaw      !== undefined) rcValues.current.yaw      = yaw;
+    if (pitch    !== undefined) rcValues.current.pitch    = pitch;
+    if (roll     !== undefined) rcValues.current.roll     = roll;
+
+    // Envío inmediato además del heartbeat periódico — reduce latencia
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type:   'RC_CONTROL',
+        params: { ...rcValues.current },
+      }));
+    }
   }, []);
 
   return (
