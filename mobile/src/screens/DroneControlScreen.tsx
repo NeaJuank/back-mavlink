@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -20,6 +20,9 @@ import { API_URL } from '../config';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const PANEL_WIDTH = SCREEN_WIDTH * 0.72;
+
+// WS URL derivada del API_URL (http -> ws)
+const WS_URL = API_URL.replace(/^http/, 'ws') + '/api/camera/ws';
 
 // ── Metadatos de modos ArduPilot ──────────────────────────────────────────────
 const MODE_META: Record<string, { color: string; icon: string; desc: string; requiresGPS?: boolean }> = {
@@ -55,25 +58,52 @@ export const DroneControlScreen: React.FC = () => {
     useDrone();
   const insets = useSafeAreaInsets();
 
-  // ── Snapshot polling ──────────────────────────────────────────────────────
-  // React Native no soporta streams MJPEG en <Image>.
-  // Solución: pedir /api/camera/snapshot cada 100ms (≈10 fps).
-  // El timestamp en el URI fuerza a RN a recargar la imagen en cada tick
-  // (sin él cachea y nunca actualiza el frame).
-  const [snapshotUri, setSnapshotUri] = useState(`${API_URL}/api/camera/snapshot?t=0`);
-  const [cameraOk, setCameraOk]       = useState(true);
+  // ── Camera — WebSocket streaming ──────────────────────────
+  const [frameUri, setFrameUri]   = useState<string | null>(null);
+  const [cameraOk, setCameraOk]   = useState(false);
+  const wsRef                     = useRef<WebSocket | null>(null);
+  const reconnectTimer            = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setSnapshotUri(`${API_URL}/api/camera/snapshot?t=${Date.now()}`);
-    }, 100); // 10 fps
-    return () => clearInterval(interval);
+  const connectWS = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setCameraOk(true);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    };
+
+    ws.onmessage = (e) => {
+      // El servidor manda base64 del frame JPEG
+      setFrameUri(`data:image/jpeg;base64,${e.data}`);
+    };
+
+    ws.onerror = () => {
+      setCameraOk(false);
+    };
+
+    ws.onclose = () => {
+      setCameraOk(false);
+      // Reconectar en 2 segundos
+      reconnectTimer.current = setTimeout(connectWS, 2000);
+    };
   }, []);
 
+  useEffect(() => {
+    connectWS();
+    return () => {
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      wsRef.current?.close();
+    };
+  }, [connectWS]);
+
+  // ── Estado UI ─────────────────────────────────────────────
   const [showEmergency, setShowEmergency] = useState(false);
   const [panelOpen, setPanelOpen]         = useState(false);
 
-  // ── Resetear joystick izquierdo al fondo cuando se arma ──────────────────
+  // ── Resetear joystick izquierdo al fondo cuando se arma ──
   const [leftJoystickReset, setLeftJoystickReset] = useState(false);
   const prevArmed = useRef<boolean>(false);
 
@@ -86,7 +116,7 @@ export const DroneControlScreen: React.FC = () => {
     prevArmed.current = isArmed;
   }, [telemetry?.armed]);
 
-  // ── PWM display ───────────────────────────────────────────────────────────
+  // ── PWM display ───────────────────────────────────────────
   const [normalizedValues, setNormalizedValues] = useState({ thrNorm: 0, yaw: 0, pitch: 0, roll: 0 });
 
   const toPWM         = (v: number): number => Math.round(1500 + v * 500);
@@ -104,7 +134,7 @@ export const DroneControlScreen: React.FC = () => {
   const panelX       = useRef(new Animated.Value(-PANEL_WIDTH)).current;
   const backdropOp   = useRef(new Animated.Value(0)).current;
 
-  // ── Panel slide ────────────────────────────────────────────────────────────
+  // ── Panel slide ───────────────────────────────────────────
   const openPanel = () => {
     setPanelOpen(true);
     Animated.parallel([
@@ -134,7 +164,7 @@ export const DroneControlScreen: React.FC = () => {
     })
   ).current;
 
-  // ── Animaciones ───────────────────────────────────────────────────────────
+  // ── Animaciones ───────────────────────────────────────────
   useEffect(() => {
     if (telemetry?.armed) {
       Animated.loop(Animated.sequence([
@@ -158,7 +188,7 @@ export const DroneControlScreen: React.FC = () => {
     }
   }, [telemetry?.battery_remaining]);
 
-  // ── Handlers joystick ─────────────────────────────────────────────────────
+  // ── Handlers joystick ─────────────────────────────────────
   const handleLeftJoystick = (x: number, y: number) => {
     setNormalizedValues(prev => ({ ...prev, thrNorm: y, yaw: x }));
     setJoystick(y, x, undefined, undefined);
@@ -169,7 +199,7 @@ export const DroneControlScreen: React.FC = () => {
     setJoystick(undefined, undefined, y, x);
   };
 
-  // ── Helper ────────────────────────────────────────────────────────────────
+  // ── Helper ────────────────────────────────────────────────
   const runCommand = async (fn: () => Promise<{ success: boolean; message: string }>) => {
     const result = await fn();
     if (!result.success) Alert.alert('Error', result.message);
@@ -256,7 +286,7 @@ export const DroneControlScreen: React.FC = () => {
     map[id]?.();
   };
 
-  // ── Valores telemetría ────────────────────────────────────────────────────
+  // ── Valores telemetría ────────────────────────────────────
   const batPct   = Number(telemetry?.battery_remaining ?? 0);
   const batColor = batPct > 50 ? '#00ff88' : batPct > 20 ? '#ffaa00' : '#ff0044';
   const sat      = Number(telemetry?.satellites ?? 0);
@@ -269,20 +299,21 @@ export const DroneControlScreen: React.FC = () => {
 
       <View style={styles.edgeZone} {...edgePanResponder.panHandlers} />
 
-      {/* ══ VIDEO — snapshot polling ══ */}
+      {/* ══ VIDEO — WebSocket streaming fluido ══ */}
       <View style={styles.videoContainer}>
-        <Image
-          source={{ uri: snapshotUri }}
-          style={styles.video}
-          resizeMode="cover"
-          onError={() => setCameraOk(false)}
-          onLoad={()  => setCameraOk(true)}
-        />
-
-        {!cameraOk && (
+        {frameUri ? (
+          <Image
+            source={{ uri: frameUri }}
+            style={styles.video}
+            resizeMode="cover"
+            fadeDuration={0}
+          />
+        ) : (
           <View style={styles.cameraOverlay}>
             <Text style={styles.cameraOverlayIcon}>📷</Text>
-            <Text style={styles.cameraOverlayText}>CÁMARA NO DISPONIBLE</Text>
+            <Text style={styles.cameraOverlayText}>
+              {cameraOk ? 'CARGANDO...' : 'CÁMARA NO DISPONIBLE'}
+            </Text>
           </View>
         )}
 
@@ -430,7 +461,6 @@ export const DroneControlScreen: React.FC = () => {
 
         {/* ══ JOYSTICKS ══ */}
         <View style={styles.joystickContainer}>
-
           <View style={styles.joystickWrapper}>
             <Text style={styles.joystickLabelTop}>THR / YAW</Text>
             <Joystick
@@ -495,7 +525,6 @@ export const DroneControlScreen: React.FC = () => {
               </View>
             </View>
           </View>
-
         </View>
       </View>
 
@@ -532,7 +561,6 @@ export const DroneControlScreen: React.FC = () => {
         </View>
 
         <ScrollView style={styles.panelScroll} showsVerticalScrollIndicator={false}>
-
           <Text style={styles.sectionLabel}>ACCIONES RÁPIDAS</Text>
 
           <TouchableOpacity
@@ -644,10 +672,10 @@ const styles = StyleSheet.create({
 
   videoContainer: { width: SCREEN_WIDTH, height: SCREEN_HEIGHT * 0.48, backgroundColor: '#000' },
   video:          { width: '100%', height: '100%' },
-  vignette:       { position: 'absolute', width: '100%', height: '100%', borderWidth: 40, borderColor: 'rgba(0,0,0,0.6)' },
-  hudOverlay:     { position: 'absolute', width: '100%', height: '100%', padding: 12 },
+  vignette:       { position: 'absolute', width: '100%', height: '100%', borderWidth: 40, borderColor: 'rgba(0,0,0,0.6)', pointerEvents: 'none' },
+  hudOverlay:     { position: 'absolute', width: '100%', height: '100%', padding: 12, pointerEvents: 'none' },
 
-  cameraOverlay:     { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', gap: 8 },
+  cameraOverlay:     { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', gap: 8 },
   cameraOverlayIcon: { fontSize: 32 },
   cameraOverlayText: { color: '#333', fontSize: 11, fontWeight: '800', letterSpacing: 2 },
 
