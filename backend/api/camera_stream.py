@@ -27,7 +27,7 @@ def _build_fallback_frame() -> bytes:
 _FALLBACK_FRAME: bytes = _build_fallback_frame()
 
 # Dispositivos de video a probar
-VIDEO_DEVICES = [2, 4, 0, 1, 3, 5]
+VIDEO_DEVICES = [4, 2, 0, 1, 3, 5]
 
 # Clientes WebSocket conectados
 _ws_clients: set = set()
