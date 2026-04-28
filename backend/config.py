@@ -1,90 +1,20 @@
 # backend/config.py
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # MAVLink
-# If MAVLINK_DEVICE env var is set use it; otherwise perform runtime detection and fall back to 'SIM'.
 MAVLINK_DEVICE = os.getenv('MAVLINK_DEVICE', '').strip()
-MAVLINK_BAUD = int(os.getenv('MAVLINK_BAUD', 57600))
 
+# CORREGIDO: baudrates correctos según tipo de conexión
+# USB directo Pixhawk → 115200
+# Radio telemetría (3DR, SiK) → 57600
+MAVLINK_BAUD = int(os.getenv('MAVLINK_BAUD', 115200))  # ← era 57600
 
-def detect_mavlink_device() -> str:
-    """Auto-detect MAVLink serial device at runtime.
-
-    Priority:
-    1. `MAVLINK_DEVICE` environment var (can be 'SIM').
-    2. Common device paths (/dev/ttyACM*, /dev/ttyUSB*).
-    3. /dev/serial/by-id entries.
-    4. Fallback to 'SIM'.
-
-    This function *probes* candidate device nodes and only returns paths
-    that appear openable to avoid selecting devices that exist but are
-    inaccessible from within the container (which caused noisy startup
-    errors). If pyserial is not available, a safe os.open probe is used.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    # Respect explicit env value (validate accessibility unless it's 'SIM')
-    if MAVLINK_DEVICE:
-        if MAVLINK_DEVICE.upper() == 'SIM':
-            return 'SIM'
-        if os.path.exists(MAVLINK_DEVICE):
-            # Probe the device to ensure it can be opened
-            try:
-                try:
-                    # Prefer pyserial if available
-                    import serial
-                    s = serial.Serial(MAVLINK_DEVICE, MAVLINK_BAUD, timeout=0.5)
-                    s.close()
-                    return MAVLINK_DEVICE
-                except Exception:
-                    # Fallback to os.open probe
-                    fd = os.open(MAVLINK_DEVICE, os.O_RDWR | getattr(os, 'O_NONBLOCK', 0))
-                    os.close(fd)
-                    return MAVLINK_DEVICE
-            except Exception as e:
-                logger.warning(f"MAVLINK_DEVICE set to '{MAVLINK_DEVICE}' but it is not accessible: {e}. Falling back to detection.")
-        else:
-            logger.warning(f"MAVLINK_DEVICE set to '{MAVLINK_DEVICE}' but path does not exist. Falling back to detection.")
-
-    # Helper to probe a candidate device
-    def _probe(path: str) -> bool:
-        if not os.path.exists(path):
-            return False
-        try:
-            try:
-                import serial
-                s = serial.Serial(path, MAVLINK_BAUD, timeout=0.5)
-                s.close()
-                return True
-            except Exception:
-                fd = os.open(path, os.O_RDWR | getattr(os, 'O_NONBLOCK', 0))
-                os.close(fd)
-                return True
-        except Exception:
-            return False
-
-    # Common device file candidates
-    candidates = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyUSB0', '/dev/ttyUSB1']
-    for c in candidates:
-        if _probe(c):
-            return c
-
-    # Try /dev/serial/by-id for persistent names
-    try:
-        import glob
-        byid = glob.glob('/dev/serial/by-id/*')
-        for b in byid:
-            if _probe(b):
-                return b
-    except Exception:
-        pass
-
-    # No accessible device found -- use simulator
-    return 'SIM'
 # API
 API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = int(os.getenv('API_PORT', 8000))
@@ -92,12 +22,89 @@ API_PORT = int(os.getenv('API_PORT', 8000))
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# Database URL
+# Database
 DEFAULT_DB = 'postgresql://dronix_user:DronixSecure2024!@postgres:5432/drones'
 DB_URL = os.getenv('DB_URL', DEFAULT_DB)
 
-# Safety: prefer PostgreSQL only (no SQLite)
 if not DB_URL.startswith('postgres'):
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.warning("DB_URL does not look like a PostgreSQL URL. Ensure DB_URL points to a Postgres database.")
+    logger.warning("DB_URL no apunta a PostgreSQL.")
+
+
+def detect_mavlink_device() -> str:
+    """
+    Auto-detecta el dispositivo MAVLink.
+    
+    Prioridad:
+    1. Variable de entorno MAVLINK_DEVICE
+    2. Detección automática de puertos comunes
+    3. Fallback a SIM
+    """
+
+    # 1. Respetar variable de entorno explícita
+    if MAVLINK_DEVICE:
+        if MAVLINK_DEVICE.upper() == 'SIM':
+            logger.info("Modo simulador activado por variable de entorno.")
+            return 'SIM'
+
+        if not os.path.exists(MAVLINK_DEVICE):
+            logger.warning(
+                f"MAVLINK_DEVICE='{MAVLINK_DEVICE}' no existe en el sistema. "
+                f"¿Está conectado el Pixhawk? ¿Tienes permisos en el grupo 'dialout'?"
+            )
+            # NO hacer fallback silencioso — el usuario configuró esto explícitamente
+            # Retornar el valor de todas formas y dejar que mavlink_connection falle con error claro
+            return MAVLINK_DEVICE
+
+        logger.info(f"Usando dispositivo MAVLink configurado: {MAVLINK_DEVICE} @ {MAVLINK_BAUD} baud")
+        return MAVLINK_DEVICE
+
+    # 2. Auto-detección
+    candidates = [
+        '/dev/ttyACM0',  # Pixhawk USB directo
+        '/dev/ttyACM1',
+        '/dev/ttyUSB0',  # Radio telemetría (SiK, 3DR)
+        '/dev/ttyUSB1',
+    ]
+
+    # Agregar entradas de /dev/serial/by-id (nombres persistentes)
+    try:
+        import glob
+        by_id = glob.glob('/dev/serial/by-id/*')
+        candidates.extend(by_id)
+    except Exception:
+        pass
+
+    for path in candidates:
+        if _probe_device(path):
+            logger.info(f"Dispositivo MAVLink detectado automáticamente: {path}")
+            return path
+
+    logger.warning(
+        "No se encontró ningún dispositivo MAVLink accesible. "
+        "Usando modo SIM. Verifica conexión USB y permisos."
+    )
+    return 'SIM'
+
+
+def _probe_device(path: str) -> bool:
+    """Verifica si un puerto serial existe y puede abrirse."""
+    if not os.path.exists(path):
+        return False
+    try:
+        import serial
+        # CRÍTICO: usar el baudrate real configurado
+        s = serial.Serial(path, MAVLINK_BAUD, timeout=0.5)
+        s.close()
+        logger.debug(f"Probe exitoso: {path}")
+        return True
+    except ImportError:
+        # pyserial no disponible, usar os.open como último recurso
+        try:
+            fd = os.open(path, os.O_RDWR | getattr(os, 'O_NONBLOCK', 0))
+            os.close(fd)
+            return True
+        except OSError:
+            return False
+    except Exception as e:
+        logger.debug(f"Probe fallido en {path}: {e}")
+        return False
