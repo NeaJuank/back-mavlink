@@ -31,7 +31,7 @@ services:
     environment:
       - DB_URL=postgresql://dronix_user:DronixSecure2024!@postgres:5432/drones
       - MAVLINK_DEVICE=/dev/ttyACM0
-      - MAVLINK_BAUD=57600
+      - MAVLINK_BAUD=115200
       - API_HOST=0.0.0.0
       - API_PORT=8000
     volumes:

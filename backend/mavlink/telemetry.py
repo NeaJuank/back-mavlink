@@ -16,14 +16,8 @@ class DroneTelemetry:
     """Clase para leer y almacenar telemetría del dron"""
     
     def __init__(self, connection, persist_interval: float = 5.0):
-        """
-        Args:
-            connection: Instancia de MAVLinkConnection
-            persist_interval: segundos entre guardados automáticos en BD (0 o None para desactivar)
-        """
         self.conn = connection
         
-        # Almacenamiento de datos
         self.data = {
             'altitude': 0.0,
             'speed': 0.0,
@@ -62,21 +56,52 @@ class DroneTelemetry:
         self._persist_interval = float(persist_interval) if persist_interval else 0
         self._persist_thread = None
         
-        # Iniciar thread de lectura
         self.start()
 
-        # Iniciar thread de persistencia si corresponde
         if self._persist_interval and self._persist_interval > 0:
-            self._persist_thread = __import__('threading').Thread(target=self._persist_loop, daemon=True)
+            self._persist_thread = threading.Thread(target=self._persist_loop, daemon=True)
             self._persist_thread.start()
+
+    # ============================================
+    # STREAMS
+    # ============================================
+
+    def _request_streams(self):
+        """Solicitar data streams al Pixhawk — espera conexión activa primero."""
+        logger.info("⏳ Esperando conexión para solicitar streams...")
+
+        for _ in range(40):  # hasta 20 segundos
+            if self.conn.is_connected():
+                break
+            time.sleep(0.5)
+
+        if not self.conn.is_connected():
+            logger.warning("⚠️ No se pudo solicitar streams: sin conexión")
+            return
+
+        try:
+            master = self.conn.master
+            master.mav.request_data_stream_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_ALL,
+                10,  # 10 Hz
+                1    # 1 = activar
+            )
+            logger.info("✅ Data streams solicitados al Pixhawk @ 10 Hz")
+        except Exception as e:
+            logger.error(f"❌ Error solicitando streams: {e}")
+
+    # ============================================
+    # PERSISTENCIA
+    # ============================================
 
     def _persist_loop(self):
         """Guardar snapshot de telemetría en la BD periódicamente."""
-        import time
         try:
             from backend.db.repository import save_telemetry
         except Exception as e:
-            logger.warning(f"save_telemetry no está disponible: {e}")
+            logger.warning(f"save_telemetry no disponible, persistencia desactivada: {e}")
             return
 
         while self._running:
@@ -87,7 +112,6 @@ class DroneTelemetry:
                     'pitch': self.data.get('attitude', {}).get('pitch'),
                     'roll': self.data.get('attitude', {}).get('roll'),
                     'yaw': self.data.get('attitude', {}).get('yaw'),
-                    # Guardamos voltaje como valor representativo de la batería
                     'battery': self.data.get('battery', {}).get('voltage')
                 }
                 save_telemetry(snapshot)
@@ -95,9 +119,12 @@ class DroneTelemetry:
                 logger.error(f"Error guardando telemetría: {e}")
             time.sleep(self._persist_interval)
 
-    
+    # ============================================
+    # LIFECYCLE
+    # ============================================
+
     def start(self):
-        """Iniciar thread de lectura de telemetría"""
+        """Iniciar threads de lectura y solicitud de streams"""
         if self._running:
             return
         
@@ -105,16 +132,23 @@ class DroneTelemetry:
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         logger.info("📡 Thread de telemetría iniciado")
+
+        # Solicitar streams en thread separado para no bloquear el arranque
+        threading.Thread(target=self._request_streams, daemon=True).start()
     
     def stop(self):
-        """Detener thread"""
+        """Detener threads"""
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
         if self._persist_thread:
             self._persist_thread.join(timeout=2)
         logger.info("📡 Thread de telemetría detenido")
-    
+
+    # ============================================
+    # LECTURA
+    # ============================================
+
     def _read_loop(self):
         """Loop principal de lectura"""
         while self._running:
@@ -123,13 +157,12 @@ class DroneTelemetry:
                     time.sleep(0.5)
                     continue
                 
-                # Leer mensaje (no bloqueante) a través de la conexión (usa lock internamente)
                 msg = self.conn.recv_match(blocking=False)
                 
                 if msg:
                     self._process_message(msg)
                 
-                time.sleep(0.01)  # 100Hz
+                time.sleep(0.01)  # 100 Hz
                 
             except Exception as e:
                 logger.error(f"Error en read_loop: {e}")
@@ -145,6 +178,7 @@ class DroneTelemetry:
                 self.data['speed'] = round(msg.airspeed, 2)
                 self.data['climb_rate'] = round(msg.climb, 2)
                 self.data['throttle'] = msg.throttle
+                logger.debug(f"VFR_HUD → alt={msg.alt} speed={msg.airspeed}")
             
             elif msg_type == "GPS_RAW_INT":
                 self.data['gps'] = {
@@ -157,11 +191,23 @@ class DroneTelemetry:
                 }
             
             elif msg_type == "BATTERY_STATUS":
-                self.data['battery'] = {
-                    'voltage': round(msg.voltages[0] / 1000.0, 2),
-                    'current': round(msg.current_battery / 100.0, 2),
-                    'remaining': msg.battery_remaining
-                }
+                volts = msg.voltages[0]
+                # 65535 = no data
+                if volts != 65535:
+                    self.data['battery'] = {
+                        'voltage': round(volts / 1000.0, 2),
+                        'current': round(msg.current_battery / 100.0, 2),
+                        'remaining': msg.battery_remaining
+                    }
+
+            elif msg_type == "SYS_STATUS":
+                # Fallback de batería si BATTERY_STATUS no llega
+                if self.data['battery']['voltage'] == 0.0:
+                    v = msg.voltage_battery
+                    if v and v != 65535:
+                        self.data['battery']['voltage'] = round(v / 1000.0, 2)
+                        self.data['battery']['current'] = round(msg.current_battery / 100.0, 2)
+                        self.data['battery']['remaining'] = msg.battery_remaining
             
             elif msg_type == "ATTITUDE":
                 self.data['attitude'] = {
@@ -186,20 +232,18 @@ class DroneTelemetry:
         
         except Exception as e:
             logger.error(f"Error procesando {msg_type}: {e}")
-    
+
     # ============================================
     # GETTERS
     # ============================================
     
     def get_all(self):
-        """Obtener toda la telemetría"""
         return {
             "connected": self.conn.is_connected(),
             **self.data
         }
     
     def get_status(self):
-        """Estado básico"""
         return {
             "connected": self.conn.is_connected(),
             "armed": self.data['armed'],
@@ -208,15 +252,12 @@ class DroneTelemetry:
         }
     
     def get_battery(self):
-        """Información de batería con tiempo estimado"""
         battery = self.data['battery']
-        
-        # Calcular tiempo restante
         current = battery['current']
         remaining_percent = battery['remaining']
         
         if current > 0:
-            battery_capacity = 5000  # mAh (ajustar según tu batería)
+            battery_capacity = 5000  # mAh — ajusta según tu batería
             remaining_mah = (remaining_percent / 100) * battery_capacity
             time_remaining_min = (remaining_mah / (current * 1000)) * 60
         else:
@@ -228,34 +269,29 @@ class DroneTelemetry:
         }
     
     def get_gps(self):
-        """Información GPS"""
         return self.data['gps']
     
     def get_attitude(self):
-        """Orientación"""
         return self.data['attitude']
 
     def get_velocity(self):
-        """Velocidad (ground_speed, vertical_speed)"""
         return {
             "ground_speed": self.data.get("speed", 0.0),
             "vertical_speed": self.data.get("climb_rate", 0.0),
         }
     
     def get_position(self):
-        """Posición completa"""
         return {
             "gps": self.data['gps'],
             "altitude": self.data['altitude'],
             "attitude": self.data['attitude']
         }
-    
+
     # ============================================
     # PRE-FLIGHT CHECKS
     # ============================================
     
     def preflight_checks(self):
-        """Verificaciones de seguridad"""
         checks = {
             "gps_fix": False,
             "battery_ok": False,
@@ -264,31 +300,27 @@ class DroneTelemetry:
             "sensors_ok": False
         }
         
-        # GPS
         gps = self.data['gps']
         if gps['fix_type'] >= 3 and gps['satellites'] >= 6:
             checks["gps_fix"] = True
         
-        # Batería
         battery = self.data['battery']
         if battery['remaining'] > 30:
             checks["battery_ok"] = True
         
-        # EKF
-        ekf = self.conn.recv_match(type='EKF_STATUS_REPORT', blocking=True, timeout=2)
+        ekf = self.conn.recv_match(msg_type='EKF_STATUS_REPORT', blocking=True, timeout=2)
         if ekf and (ekf.flags & 0x01):
             checks["ekf_ok"] = True
         
-        # Home
         if self.data['home_position']['lat'] != 0:
             checks["home_set"] = True
         
-        # Sensores
-        sys_status = self.conn.recv_match(type='SYS_STATUS', blocking=True, timeout=2)
+        sys_status = self.conn.recv_match(msg_type='SYS_STATUS', blocking=True, timeout=2)
         if sys_status:
-            sensors_ok = (sys_status.onboard_control_sensors_health &
-                         sys_status.onboard_control_sensors_enabled) == \
-                        sys_status.onboard_control_sensors_enabled
+            sensors_ok = (
+                sys_status.onboard_control_sensors_health &
+                sys_status.onboard_control_sensors_enabled
+            ) == sys_status.onboard_control_sensors_enabled
             checks["sensors_ok"] = sensors_ok
         
         return checks
