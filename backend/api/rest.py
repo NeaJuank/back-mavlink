@@ -108,7 +108,6 @@ async def get_status():
 async def get_telemetry():
     """
     Telemetría completa del dron.
-    CORRECCIÓN: ahora incluye vertical_speed y hdop que el frontend necesita.
     """
     try:
         ctrl     = get_mav_controller()
@@ -117,10 +116,17 @@ async def get_telemetry():
         battery  = ctrl.telemetry.get_battery()  or {}
         velocity = ctrl.telemetry.get_velocity() or {}
 
+        # ✅ Altitud real viene de VFR_HUD, no del GPS
+        altitude = ctrl.telemetry.data.get("altitude", 0)
+
+        # ✅ HDOP: filtrar valor basura 655.35 (eph=65535 = sin dato)
+        hdop_raw = gps.get("hdop", 0)
+        hdop = hdop_raw if hdop_raw < 100 else 0
+
         return {
             "armed":             ctrl.is_armed(),
             "mode":              ctrl.get_mode(),
-            "altitude":          gps.get("alt", 0),
+            "altitude":          altitude,           # ← CORREGIDO
             "latitude":          gps.get("lat", 0),
             "longitude":         gps.get("lon", 0),
             "roll":              attitude.get("roll", 0),
@@ -129,9 +135,9 @@ async def get_telemetry():
             "battery_voltage":   battery.get("voltage", 0),
             "battery_remaining": battery.get("remaining", 0),
             "ground_speed":      velocity.get("ground_speed", 0),
-            "vertical_speed":    velocity.get("vertical_speed", 0),   # CORRECCIÓN
-            "satellites":        gps.get("satellites", gps.get("satellites_visible", 0)),
-            "hdop":              gps.get("hdop", 0),                   # CORRECCIÓN
+            "vertical_speed":    velocity.get("vertical_speed", 0),
+            "satellites":        gps.get("satellites", 0),
+            "hdop":              hdop,               # ← CORREGIDO
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

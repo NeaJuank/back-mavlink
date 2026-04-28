@@ -181,14 +181,15 @@ class DroneTelemetry:
                 logger.debug(f"VFR_HUD → alt={msg.alt} speed={msg.airspeed}")
             
             elif msg_type == "GPS_RAW_INT":
+                hdop_raw = msg.eph
                 self.data['gps'] = {
                     'lat': round(msg.lat / 1e7, 7),
                     'lon': round(msg.lon / 1e7, 7),
                     'alt': round(msg.alt / 1000.0, 2),
                     'satellites': msg.satellites_visible,
                     'fix_type': msg.fix_type,
-                    'hdop': round(msg.eph / 100.0, 2)
-                }
+                    'hdop': round(hdop_raw / 100.0, 2) if hdop_raw != 65535 else 0.0  # ← CORREGIDO
+    }
             
             elif msg_type == "BATTERY_STATUS":
                 volts = msg.voltages[0]
