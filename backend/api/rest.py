@@ -106,9 +106,6 @@ async def get_status():
 
 @router.get("/telemetry")
 async def get_telemetry():
-    """
-    Telemetría completa del dron.
-    """
     try:
         ctrl     = get_mav_controller()
         attitude = ctrl.telemetry.get_attitude() or {}
@@ -116,17 +113,12 @@ async def get_telemetry():
         battery  = ctrl.telemetry.get_battery()  or {}
         velocity = ctrl.telemetry.get_velocity() or {}
 
-        # ✅ Altitud real viene de VFR_HUD, no del GPS
-        altitude = ctrl.telemetry.data.get("altitude", 0)
-
-        # ✅ HDOP: filtrar valor basura 655.35 (eph=65535 = sin dato)
         hdop_raw = gps.get("hdop", 0)
-        hdop = hdop_raw if hdop_raw < 100 else 0
 
         return {
             "armed":             ctrl.is_armed(),
             "mode":              ctrl.get_mode(),
-            "altitude":          altitude,           # ← CORREGIDO
+            "altitude":          ctrl.telemetry.data.get("altitude", 0),  # ← VFR_HUD
             "latitude":          gps.get("lat", 0),
             "longitude":         gps.get("lon", 0),
             "roll":              attitude.get("roll", 0),
@@ -137,7 +129,7 @@ async def get_telemetry():
             "ground_speed":      velocity.get("ground_speed", 0),
             "vertical_speed":    velocity.get("vertical_speed", 0),
             "satellites":        gps.get("satellites", 0),
-            "hdop":              hdop,               # ← CORREGIDO
+            "hdop":              hdop_raw if hdop_raw < 100 else 0,       # ← filtrado
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -188,9 +188,10 @@ class DroneTelemetry:
                     'alt': round(msg.alt / 1000.0, 2),
                     'satellites': msg.satellites_visible,
                     'fix_type': msg.fix_type,
-                    'hdop': round(hdop_raw / 100.0, 2) if hdop_raw != 65535 else 0.0  # ← CORREGIDO
+                    'hdop': round(hdop_raw / 100.0, 2) if hdop_raw != 65535 else 0.0
+    
     }
-            
+
             elif msg_type == "BATTERY_STATUS":
                 volts = msg.voltages[0]
                 # 65535 = no data
