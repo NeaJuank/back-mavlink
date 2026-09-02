@@ -315,7 +315,6 @@ class _SimulatedController:
     def _tick_loop(self):
         import time, math
         while self._running:
-            # Simular pequeños cambios
             if self._state['armed'] and self._state['mode'] == 'GUIDED' and self._state['altitude'] < 10.0:
                 self._state['altitude'] += 0.1
                 self._state['climb_rate'] = 0.1
