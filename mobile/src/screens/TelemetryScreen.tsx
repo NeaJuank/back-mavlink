@@ -34,6 +34,7 @@ export const TelemetryScreen: React.FC = () => {
   const { telemetry, connected } = useDrone();
 
   const alt = Number(telemetry?.altitude ?? 0);
+  const throttle = Number(telemetry?.throttle ?? 0);
   const lat = Number(telemetry?.latitude ?? 0);
   const lon = Number(telemetry?.longitude ?? 0);
   const sat = Number(telemetry?.satellites ?? 0);
@@ -44,6 +45,7 @@ export const TelemetryScreen: React.FC = () => {
   const gs = Number(telemetry?.ground_speed ?? 0);
   const vs = Number(telemetry?.vertical_speed ?? 0);
   const batV = Number(telemetry?.battery_voltage ?? 0);
+  const batCurrent = Number(telemetry?.battery_current ?? 0);
   const batPct = Number(telemetry?.battery_remaining ?? 0);
   const mode = String(telemetry?.mode ?? 'UNKNOWN');
   const armed = Boolean(telemetry?.armed);
@@ -203,7 +205,10 @@ export const TelemetryScreen: React.FC = () => {
           {/* Porcentaje grande */}
           <View style={styles.batteryTopRow}>
             <Text style={[styles.batteryPct, { color: batColor }]}>{batPct.toFixed(0)}%</Text>
-            <Text style={[styles.batteryVoltage, { color: batColor }]}>{batV.toFixed(2)} V</Text>
+            <View style={styles.batteryStats}>
+              <Text style={[styles.batteryVoltage, { color: batColor }]}>{batV.toFixed(2)} V</Text>
+              <Text style={styles.batteryCurrent}>{batCurrent.toFixed(2)} A</Text>
+            </View>
           </View>
 
           {/* Barra */}
@@ -224,6 +229,18 @@ export const TelemetryScreen: React.FC = () => {
             <Text style={styles.batteryMarkLabel}>50%</Text>
             <Text style={styles.batteryMarkLabel}>75%</Text>
             <Text style={styles.batteryMarkLabel}>100%</Text>
+          </View>
+        </View>
+
+        <Text style={styles.sectionLabel}>MOTOR Y CONTROL</Text>
+        <View style={styles.dataContainer}>
+          <View style={styles.dataRow}>
+            <Text style={styles.rowLabel}>Throttle</Text>
+            <Text style={[styles.rowValue, { color: '#00ff88' }]}>{(throttle * 100).toFixed(1)}%</Text>
+          </View>
+          <View style={[styles.dataRow, { borderBottomWidth: 0 }]}>
+            <Text style={styles.rowLabel}>Corriente</Text>
+            <Text style={[styles.rowValue, { color: '#ffaa00' }]}>{batCurrent.toFixed(2)} A</Text>
           </View>
         </View>
 
@@ -553,6 +570,15 @@ const styles = StyleSheet.create({
   batteryVoltage: {
     fontSize: 18,
     fontWeight: '800',
+  },
+  batteryStats: {
+    alignItems: 'flex-end',
+    gap: 3,
+  },
+  batteryCurrent: {
+    color: '#666',
+    fontSize: 11,
+    fontWeight: '700',
   },
   batteryBarWrap: {
     height: 10,

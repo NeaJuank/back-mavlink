@@ -7,12 +7,14 @@ interface Telemetry {
   armed:              boolean;
   mode:               string;
   altitude:           number;
+  throttle:           number;
   latitude:           number;
   longitude:          number;
   roll:               number;
   pitch:              number;
   yaw:                number;
   battery_voltage:    number;
+  battery_current:   number;
   battery_remaining:  number;
   ground_speed:       number;
   vertical_speed:     number;
@@ -51,12 +53,14 @@ const DEFAULT_TELEMETRY: Telemetry = {
   armed:             false,
   mode:              'UNKNOWN',
   altitude:          0,
+  throttle:          0,
   latitude:          0,
   longitude:         0,
   roll:              0,
   pitch:             0,
   yaw:               0,
   battery_voltage:   0,
+  battery_current:   0,
   battery_remaining: 0,
   ground_speed:      0,
   vertical_speed:    0,

@@ -304,6 +304,8 @@ class _SimulatedController:
             'attitude': {'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0},
             'home_position': {'lat': 0.0, 'lon': 0.0, 'alt': 0.0},
         }
+        self._target_altitude = 0.0
+        self._started_at = time.monotonic()
 
         self._params = {}
         self._missions = []
@@ -315,15 +317,29 @@ class _SimulatedController:
     def _tick_loop(self):
         import time, math
         while self._running:
-            if self._state['armed'] and self._state['mode'] == 'GUIDED' and self._state['altitude'] < 10.0:
-                self._state['altitude'] += 0.1
-                self._state['climb_rate'] = 0.1
-            else:
-                self._state['climb_rate'] = 0.0
+            elapsed = time.monotonic() - self._started_at
+            if self._state['mode'] == 'LAND':
+                self._target_altitude = 0.0
+            elif self._state['armed'] and self._state['mode'] == 'GUIDED':
+                self._target_altitude = max(self._target_altitude, self._state['altitude'])
+
+            altitude_step = max(-0.2, min(0.2, self._target_altitude - self._state['altitude']))
+            self._state['altitude'] += altitude_step
+            self._state['climb_rate'] = altitude_step / 0.1
+
+            movement = 1.0 if self._state['armed'] else 0.15
+            self._state['attitude']['roll'] = math.sin(elapsed * 1.7) * 8.0 * movement
+            self._state['attitude']['pitch'] = math.cos(elapsed * 1.3) * 5.0 * movement
+            self._state['attitude']['yaw'] = (elapsed * 12.0) % 360
+            self._state['speed'] = max(0.0, 3.0 + math.sin(elapsed * 0.8) * 1.2) if self._state['armed'] else 0.0
+            self._state['throttle'] = 0.55 + math.sin(elapsed * 0.9) * 0.08 if self._state['armed'] else 0.0
 
             # Simular descarga de batería lenta
             if self._state['armed']:
+                self._state['battery']['current'] = 4.0 + self._state['throttle'] * 3.0
                 self._state['battery']['remaining'] = max(0, self._state['battery']['remaining'] - 0.01)
+            else:
+                self._state['battery']['current'] = 0.0
 
             time.sleep(0.1)
 
@@ -369,12 +385,11 @@ class _SimulatedController:
         # Simular armar y subir
         self.set_mode('GUIDED')
         self.arm()
-        self._state['altitude'] = float(altitude)
+        self._target_altitude = float(altitude)
         return True
 
     def land(self):
         self._state['mode'] = 'LAND'
-        self._state['altitude'] = 0.0
         return True
 
     def rtl(self):

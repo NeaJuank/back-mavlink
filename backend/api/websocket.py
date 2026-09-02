@@ -90,6 +90,7 @@ async def get_telemetry_data(mav_controller) -> dict:
                 "armed":             mav_controller.is_armed(),
                 "mode":              mav_controller.get_mode(),
                 "altitude":          sim.get("altitude", 0),
+                "throttle":          sim.get("throttle", 0),
                 "latitude":          sim.get("gps", {}).get("lat", 0),
                 "longitude":         sim.get("gps", {}).get("lon", 0),
                 "roll":              sim.get("attitude", {}).get("roll", 0),
